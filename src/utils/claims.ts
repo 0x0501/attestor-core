@@ -115,6 +115,15 @@ export function canonicalStringify(params: { [key: string]: any } | undefined) {
 }
 
 export function hashProviderParams(params: ProviderParams<'http'>): string {
+	// Called for every provider, but shaped for `http`. A provider without
+	// responseMatches is hashed over its canonical params instead of crashing
+	// on fields it was never meant to have.
+	if(!Array.isArray(params?.responseMatches)) {
+		return keccak256(
+			strToUint8Array(canonicalStringify(params as { [key: string]: unknown }))
+		).toLowerCase()
+	}
+
 	const filteredParams = {
 		url: params.url,
 		method: params.method,

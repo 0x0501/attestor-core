@@ -9,6 +9,7 @@ import type {
 } from '#src/proto/api.ts'
 import { ClaimTunnelRequest, TranscriptMessageSenderType } from '#src/proto/api.ts'
 import { providers } from '#src/providers/index.ts'
+import { assertProvenRangesBindTheTranscript, assertSeedBindsTheTranscript } from '#src/providers/tokenswim-window/index.ts'
 import { niceParseJsonObject } from '#src/server/utils/generics.ts'
 import { computeOPRFRaw } from '#src/server/utils/oprf-raw.ts'
 import { processHandshake } from '#src/server/utils/process-handshake.ts'
@@ -86,6 +87,14 @@ export async function assertValidClaimRequest(
 			'Invalid signature on claim request'
 		)
 	}
+
+	// Before the transcript is decrypted: these are the cheap checks, and they
+	// are the ones that decide whether the expensive ones are about anything
+	// (ADR 0040). Both are a no-op for every provider but ours, and both need
+	// the undecrypted transcript — the first for the ciphertext the Witnesses
+	// hashed, the second for the proof offsets the receipt no longer carries.
+	await assertSeedBindsTheTranscript(data.provider, data.parameters, request.transcript)
+	assertProvenRangesBindTheTranscript(data.provider, data.parameters, request.transcript)
 
 	const receipt = await decryptTranscript(
 		request.transcript,

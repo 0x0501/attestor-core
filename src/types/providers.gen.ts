@@ -120,7 +120,121 @@ export interface HttpProviderSecretParameters {
 }
 
 export const HttpProviderSecretParametersJson = {"title":"HttpProviderSecretParameters","type":"object","description":"Secret parameters to be used with HTTP provider. None of the values in this object will be shown to the attestor","properties":{"cookieStr":{"type":"string","description":"cookie string for authorisation."},"authorisationHeader":{"type":"string","description":"authorisation header value"},"headers":{"type":"object","description":"Headers that need to be hidden from the attestor","additionalProperties":{"type":"string"}},"paramValues":{"type":"object","description":"A map of parameter values which are user in form of {{param}} in body these parameters will NOT be shown to attestor and extracted","additionalProperties":{"type":"string"}}},"additionalProperties":false}
+export interface TokenswimWindowParameters {
+	url: string
+	method: string
+	headers?: { [k: string]: string }
+	body?: string
+	/** hex digest of the client direction's ciphertext, the seed for its windows */
+	clientDigest: string
+	/** hex digest of the server direction's ciphertext */
+	serverDigest: string
+	windowCount: number
+	/**
+	 * How many bytes of application data each direction carried. Named rather
+	 * than only derived because the claim path arrives at it twice — once from
+	 * the undecrypted transcript and once from the decrypted receipt — and the
+	 * proven ranges below mean the same bytes at both ends only when the two
+	 * agree.
+	 */
+	clientLength: number
+	serverLength: number
+	/**
+	 * The [from, to) ranges of each direction's application data that a ZK proof
+	 * covers, in the same coordinates as the challenge windows. Sorted, with
+	 * touching ranges fused. Redaction is marked with a byte that is also legal
+	 * data, so this is what says a challenged byte was answered with a proof at
+	 * all rather than with the sentinel.
+	 */
+	clientProven: [number, number][]
+	serverProven: [number, number][]
+	/**
+	 * Every Witness in the relay path, each with its BLS12-381 public key and
+	 * its signature over SHA-256(clientDigest ‖ serverDigest). At least two, all
+	 * distinct; the protocol sets no upper bound, so this is a list rather than
+	 * a fixed pair of fields.
+	 */
+	witnesses: {
+		publicKey: string
+		signature: string
+	}[]
+	/**
+	 * [from, to) over the client direction, revealed on top of the challenged
+	 * windows because it names the model. Absent when the request named none.
+	 */
+	modelChunk?: [number, number]
+	/**
+	 * [from, to) of the `"model": value` pair itself, inside modelChunk. The
+	 * chunk is what had to be revealed; this is where to read, because widening
+	 * to chunk boundaries can drag a tool schema's own `model` in beside it.
+	 */
+	modelField?: [number, number]
+}
+
+export const TokenswimWindowParametersJson = {
+	title: 'TokenswimWindowParameters',
+	type: 'object',
+	properties: {
+		url: { type: 'string' },
+		method: { type: 'string' },
+		headers: { type: 'object', additionalProperties: { type: 'string' } },
+		body: { type: 'string' },
+		clientDigest: { type: 'string' },
+		serverDigest: { type: 'string' },
+		windowCount: { type: 'number' },
+		clientLength: { type: 'number' },
+		serverLength: { type: 'number' },
+		clientProven: {
+			type: 'array',
+			items: {
+				type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2,
+			},
+		},
+		serverProven: {
+			type: 'array',
+			items: {
+				type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2,
+			},
+		},
+		witnesses: {
+			type: 'array',
+			minItems: 2,
+			items: {
+				type: 'object',
+				properties: {
+					publicKey: { type: 'string' },
+					signature: { type: 'string' },
+				},
+				required: ['publicKey', 'signature'],
+				additionalProperties: false,
+			},
+		},
+		modelChunk: {
+			type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2,
+		},
+		modelField: {
+			type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2,
+		},
+	},
+	required: [
+		'url', 'method', 'clientDigest', 'serverDigest', 'windowCount', 'witnesses',
+		'clientLength', 'serverLength', 'clientProven', 'serverProven',
+	],
+	additionalProperties: false,
+}
+
+export const TokenswimWindowSecretParametersJson = {
+	title: 'TokenswimWindowSecretParameters',
+	type: 'object',
+	properties: {},
+	additionalProperties: false,
+}
+
 export interface ProvidersConfig {
+	tokenswimWindow: {
+		parameters: TokenswimWindowParameters
+		secretParameters: Record<string, never>
+	}
 	http: {
 		parameters: HttpProviderParameters
 		secretParameters: HttpProviderSecretParameters
@@ -128,6 +242,10 @@ export interface ProvidersConfig {
 }
 
 export const PROVIDER_SCHEMAS = {
+	tokenswimWindow: {
+		parameters: TokenswimWindowParametersJson,
+		secretParameters: TokenswimWindowSecretParametersJson
+	},
 	http: {
 		parameters: HttpProviderParametersJson,
 		secretParameters: HttpProviderSecretParametersJson

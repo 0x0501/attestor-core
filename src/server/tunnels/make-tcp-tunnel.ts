@@ -245,7 +245,10 @@ async function _getSocket(
 		return socket
 	}
 
-	if(!isValidCountryCode(geoLocation)) {
+	// A proxySessionId on its own is a legitimate request — pin the egress IP,
+	// do not pin the country — but the check below rejects the empty
+	// geoLocation that comes with it.
+	if(geoLocation && !isValidCountryCode(geoLocation)) {
 		throw AttestorError.badRequest(
 			`Geolocation "${geoLocation}" is invalid. Must be 2 letter ISO country code`,
 			{ geoLocation }

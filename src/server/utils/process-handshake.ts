@@ -1,3 +1,5 @@
+import { brotliDecompressSync, inflateSync, zstdDecompressSync } from 'node:zlib'
+
 import type {
 	CipherSuite,
 	TLSProtocolVersion,
@@ -23,6 +25,14 @@ import type { Logger } from '#src/types/index.ts'
 import { decryptDirect } from '#src/utils/index.ts'
 
 const RECORD_LENGTH_BYTES = 3
+
+// RFC 8879 handshake type + the compression algorithms it registers.
+const COMPRESSED_CERTIFICATE = 25
+const CERT_DECOMPRESSORS: Record<number, (b: Uint8Array) => Buffer> = {
+	1: inflateSync,
+	2: brotliDecompressSync,
+	3: zstdDecompressSync,
+}
 
 type HandshakeMessage = {
 	type: number
@@ -229,6 +239,26 @@ export async function processHandshake(receipt: ClaimTunnelRequest['transcript']
 				{ serverTLSVersion: tlsVersion, cipherSuite },
 				'extracted server hello params'
 			)
+			break
+		case COMPRESSED_CERTIFICATE:
+			// RFC 8879. A browser-shaped ClientHello offers certificate
+			// compression, so the chain arrives compressed and the plain
+			// CERTIFICATE case never fires. `contentWithHeader` — the
+			// compressed form — is what goes into handshakeRawMessages, which
+			// is what the CertificateVerify transcript hash covers.
+			const algorithm = (content[0] << 8) | content[1]
+			const decompress = CERT_DECOMPRESSORS[algorithm]
+			if(!decompress) {
+				throw new Error(`Unsupported certificate compression ${algorithm}`)
+			}
+
+			const inflated = new Uint8Array(decompress(content.slice(8)))
+			const compressedResult = parseCertificates(inflated, { version: tlsVersion! })
+			certificates.push(...compressedResult.certificates)
+
+			await verifyCertificateChain(certificates, hostname!, logger)
+			logger.info({ hostname, algorithm }, 'verified provider certificate chain')
+			certVerified = true
 			break
 		case SUPPORTED_RECORD_TYPE_MAP.CERTIFICATE:
 			const parseResult = parseCertificates(content, { version: tlsVersion! })
