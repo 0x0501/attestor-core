@@ -174,8 +174,6 @@ test('public attestation V2 is fixed-size, secret-free, signed, bundle-bound, an
 	const text = preimage.toString('latin1')
 	for(const secret of forbidden) assert.equal(text.includes(secret), false)
 
-	// V1 was 285 bytes. V2 adds providerHash, proofBundleHash,
-	// leafResultRoot, and circuitSetHash: four fixed 32-byte commitments.
 	assert.equal(preimage.length, 413)
 	assert.equal(digest.length, 32)
 
@@ -235,7 +233,7 @@ test('current TypeScript ClaimTunnelResponse ignores additive public-attestation
 	const publicAttestation = new Uint8Array(413).fill(0xa5)
 	const newerWire = Buffer.concat([
 		Buffer.from(legacy),
-		Buffer.from([0x2a]), // field 5, wire type 2
+		Buffer.from([0x2a]),
 		Buffer.from(encodeVarint(publicAttestation.length)),
 		Buffer.from(publicAttestation),
 	])
@@ -244,5 +242,5 @@ test('current TypeScript ClaimTunnelResponse ignores additive public-attestation
 	assert.equal(decoded.claim?.provider, 'tokenswim-window')
 	assert.equal(decoded.claim?.identifier, 'claim-id')
 	assert.equal(decoded.signatures?.attestorAddress, '0x70997970c51812dc3a010c7d01b50e0d17dc79c8')
-	assert.deepEqual(decoded.signatures?.claimSignature, Uint8Array.from([1, 2, 3]))
+	assert.equal(Buffer.from(decoded.signatures?.claimSignature ?? []).toString('hex'), '010203')
 })
