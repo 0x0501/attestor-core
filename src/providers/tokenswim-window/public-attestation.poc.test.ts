@@ -5,7 +5,8 @@ import { getBytes } from 'ethers'
 
 import { ETH_SIGNATURE_PROVIDER } from '#src/utils/signatures/eth.ts'
 
-const DOMAIN = Buffer.from('TOKENSWIM_NET_ATTESTATION_V1\0', 'ascii')
+const DOMAIN = Buffer.from('TOKENSWIM_NET_ATTESTATION_V2\0', 'ascii')
+const PROOF_BUNDLE_DOMAIN = Buffer.from('TOKENSWIM_PROOF_BUNDLE_V1\0', 'ascii')
 const PRIVATE_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
 
 function sha256(data: Uint8Array | string) {
@@ -45,6 +46,18 @@ function witnessSetHash(witnesses: { publicKey: string; signature: string }[]) {
 	return sha256(Buffer.concat(parts.map(Buffer.from)))
 }
 
+/**
+ * Production computes this over the exact deterministic protobuf bytes the
+ * Attestor accepted: ClaimTunnelRequest.encode(request).finish(). The hash is
+ * public-safe even though the bundle itself contains private transcript data.
+ */
+function proofBundleHash(encodedClaimTunnelRequest: Uint8Array) {
+	return sha256(Buffer.concat([
+		PROOF_BUNDLE_DOMAIN,
+		Buffer.from(encodedClaimTunnelRequest),
+	]))
+}
+
 type PublicFacts = {
 	timestampS: number
 	clientDigest: string
@@ -58,6 +71,8 @@ type PublicFacts = {
 	upstreamHost: string
 	model: string
 	owner: string
+	proofBundleHash: Uint8Array
+	circuitVersion: string
 }
 
 function publicAttestationDigest(f: PublicFacts) {
@@ -65,6 +80,7 @@ function publicAttestationDigest(f: PublicFacts) {
 	const serverDigest = getBytes(f.serverDigest)
 	assert.equal(clientDigest.length, 32)
 	assert.equal(serverDigest.length, 32)
+	assert.equal(f.proofBundleHash.length, 32)
 
 	const proven = sha256(Buffer.concat([
 		Buffer.from(rangesHash(f.clientProven)),
@@ -72,7 +88,7 @@ function publicAttestationDigest(f: PublicFacts) {
 	]))
 	const preimage = Buffer.concat([
 		DOMAIN,
-		u32(1),
+		u32(2),
 		u64(f.timestampS),
 		Buffer.from(clientDigest),
 		Buffer.from(serverDigest),
@@ -84,9 +100,16 @@ function publicAttestationDigest(f: PublicFacts) {
 		Buffer.from(sha256(f.upstreamHost.toLowerCase())),
 		Buffer.from(sha256(f.model)),
 		Buffer.from(sha256(f.owner.toLowerCase())),
+		Buffer.from(f.proofBundleHash),
+		Buffer.from(sha256(f.circuitVersion)),
 	])
 	return { preimage, digest: sha256(preimage) }
 }
+
+const encodedClaimFixture = Buffer.from(
+	'ClaimTunnelRequest deterministic protobuf fixture: transcript + Groth16 chunks + owner signature',
+	'utf8',
+)
 
 const facts: PublicFacts = {
 	timestampS: 1756300000,
@@ -110,22 +133,25 @@ const facts: PublicFacts = {
 	upstreamHost: 'chatgpt.com',
 	model: 'gpt-5-codex',
 	owner: '0xffcf8fdee72ac11b5c542428b35eef5769c409f0',
+	proofBundleHash: proofBundleHash(encodedClaimFixture),
+	circuitVersion: 'reclaim-gnark-v0.14.0/chacha20@40c74b9e1c9f',
 }
 
-test('public attestation is fixed-size, secret-free, signed, and mutation-bound', async () => {
+test('public attestation V2 is fixed-size, secret-free, signed, and bundle-bound', async () => {
 	const { preimage, digest } = publicAttestationDigest(facts)
 	const forbidden = [
 		'/backend-api/codex/responses?secret=never-publish',
 		'Authorization',
 		'Bearer ',
 		'raw plaintext context',
+		encodedClaimFixture.toString('utf8'),
 	]
 	const text = preimage.toString('latin1')
 	for(const secret of forbidden) assert.equal(text.includes(secret), false)
 
-	// Domain(29) + version(4) + timestamp(8) + 2 digests(64) + witness hash(32)
-	// + lengths(16) + window count(4) + four final hashes(128) = 285 bytes.
-	assert.equal(preimage.length, 285)
+	// V1 was 285 bytes. V2 adds exactly two 32-byte commitments:
+	// proofBundleHash and SHA-256(circuitVersion), so the wire is 349 bytes.
+	assert.equal(preimage.length, 349)
 	assert.equal(digest.length, 32)
 
 	const publicKey = ETH_SIGNATURE_PROVIDER.getPublicKey(PRIVATE_KEY)
@@ -133,8 +159,20 @@ test('public attestation is fixed-size, secret-free, signed, and mutation-bound'
 	const signature = await ETH_SIGNATURE_PROVIDER.sign(digest, PRIVATE_KEY)
 	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(digest, signature, address), true)
 
-	const mutated = publicAttestationDigest({ ...facts, model: 'gpt-5-codex-forged' }).digest
-	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(mutated, signature, address), false)
+	const modelMutated = publicAttestationDigest({ ...facts, model: 'gpt-5-codex-forged' }).digest
+	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(modelMutated, signature, address), false)
 
-	console.log(`TOKENSWIM_PUBLIC_ATTESTATION_VECTOR digest=0x${Buffer.from(digest).toString('hex')} address=${address} signature=0x${Buffer.from(signature).toString('hex')}`)
+	const bundleMutated = publicAttestationDigest({
+		...facts,
+		proofBundleHash: proofBundleHash(Buffer.from('different valid proof bundle', 'utf8')),
+	}).digest
+	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(bundleMutated, signature, address), false)
+
+	const circuitMutated = publicAttestationDigest({
+		...facts,
+		circuitVersion: 'different-circuit-version',
+	}).digest
+	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(circuitMutated, signature, address), false)
+
+	console.log(`TOKENSWIM_PUBLIC_ATTESTATION_V2_VECTOR digest=0x${Buffer.from(digest).toString('hex')} bundle_hash=0x${Buffer.from(facts.proofBundleHash).toString('hex')} address=${address} signature=0x${Buffer.from(signature).toString('hex')}`)
 })
