@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { getBytes } from 'ethers'
 
+import { ClaimTunnelResponse } from '#src/proto/api.ts'
 import { ETH_SIGNATURE_PROVIDER } from '#src/utils/signatures/eth.ts'
 
 const DOMAIN = Buffer.from('TOKENSWIM_NET_ATTESTATION_V2\0', 'ascii')
@@ -175,4 +176,45 @@ test('public attestation V2 is fixed-size, secret-free, signed, and bundle-bound
 	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(circuitMutated, signature, address), false)
 
 	console.log(`TOKENSWIM_PUBLIC_ATTESTATION_V2_VECTOR digest=0x${Buffer.from(digest).toString('hex')} bundle_hash=0x${Buffer.from(facts.proofBundleHash).toString('hex')} address=${address} signature=0x${Buffer.from(signature).toString('hex')}`)
+})
+
+function encodeVarint(value: number) {
+	const out: number[] = []
+	let n = value
+	while(n >= 0x80) {
+		out.push((n & 0x7f) | 0x80)
+		n = Math.floor(n / 128)
+	}
+	out.push(n)
+	return Uint8Array.from(out)
+}
+
+test('current TypeScript ClaimTunnelResponse ignores additive public-attestation field 5', () => {
+	const legacy = ClaimTunnelResponse.encode(ClaimTunnelResponse.create({
+		claim: {
+			provider: 'tokenswim-window',
+			owner: facts.owner,
+			timestampS: facts.timestampS,
+			identifier: 'claim-id',
+		},
+		signatures: {
+			attestorAddress: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8',
+			claimSignature: Uint8Array.from([1, 2, 3]),
+			resultSignature: Uint8Array.from([4, 5, 6]),
+		},
+	})).finish()
+
+	const publicAttestation = new Uint8Array(349).fill(0xa5)
+	const newerWire = Buffer.concat([
+		Buffer.from(legacy),
+		Buffer.from([0x2a]), // field 5, wire type 2
+		Buffer.from(encodeVarint(publicAttestation.length)),
+		Buffer.from(publicAttestation),
+	])
+
+	const decoded = ClaimTunnelResponse.decode(newerWire)
+	assert.equal(decoded.claim?.provider, 'tokenswim-window')
+	assert.equal(decoded.claim?.identifier, 'claim-id')
+	assert.equal(decoded.signatures?.attestorAddress, '0x70997970c51812dc3a010c7d01b50e0d17dc79c8')
+	assert.deepEqual(decoded.signatures?.claimSignature, Uint8Array.from([1, 2, 3]))
 })
