@@ -8,6 +8,7 @@ import { ETH_SIGNATURE_PROVIDER } from '#src/utils/signatures/eth.ts'
 
 const DOMAIN = Buffer.from('TOKENSWIM_NET_ATTESTATION_V2\0', 'ascii')
 const PROOF_BUNDLE_DOMAIN = Buffer.from('TOKENSWIM_PROOF_BUNDLE_V1\0', 'ascii')
+const LEAF_RESULT_ROOT_DOMAIN = Buffer.from('TOKENSWIM_LEAF_RESULT_ROOT_V1\0', 'ascii')
 const PRIVATE_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
 
 function sha256(data: Uint8Array | string) {
@@ -28,9 +29,7 @@ function u64(n: number) {
 
 function rangesHash(ranges: [number, number][]) {
 	const parts: Uint8Array[] = [u32(ranges.length)]
-	for(const [from, to] of ranges) {
-		parts.push(u64(from), u64(to))
-	}
+	for(const [from, to] of ranges) parts.push(u64(from), u64(to))
 	return sha256(Buffer.concat(parts.map(Buffer.from)))
 }
 
@@ -48,14 +47,27 @@ function witnessSetHash(witnesses: { publicKey: string; signature: string }[]) {
 }
 
 /**
- * Production computes this over the exact deterministic protobuf bytes the
- * Attestor accepted: ClaimTunnelRequest.encode(request).finish(). The hash is
- * public-safe even though the bundle itself contains private transcript data.
+ * Production computes this over a deterministic TokenswimProofBundleV1 whose
+ * private body contains the canonical ClaimTunnelRequest plus the leaf receipts
+ * that produced its chunks. The public chain receives only this 32-byte hash.
  */
-function proofBundleHash(encodedClaimTunnelRequest: Uint8Array) {
+function proofBundleHash(encodedProofBundle: Uint8Array) {
 	return sha256(Buffer.concat([
 		PROOF_BUNDLE_DOMAIN,
-		Buffer.from(encodedClaimTunnelRequest),
+		Buffer.from(encodedProofBundle),
+	]))
+}
+
+/**
+ * Production uses a deterministic Merkle root of the public-safe leaf receipts
+ * (task id, circuit id, public-input hash, proof hash, prover account/signature),
+ * never the plaintext public inputs themselves. The fixed fixture below proves
+ * the attestation actually binds this independent settlement commitment.
+ */
+function leafResultRoot(encodedLeafReceiptFixture: Uint8Array) {
+	return sha256(Buffer.concat([
+		LEAF_RESULT_ROOT_DOMAIN,
+		Buffer.from(encodedLeafReceiptFixture),
 	]))
 }
 
@@ -69,11 +81,13 @@ type PublicFacts = {
 	witnesses: { publicKey: string; signature: string }[]
 	clientProven: [number, number][]
 	serverProven: [number, number][]
+	provider: string
 	upstreamHost: string
 	model: string
 	owner: string
 	proofBundleHash: Uint8Array
-	circuitVersion: string
+	leafResultRoot: Uint8Array
+	circuitSetVersion: string
 }
 
 function publicAttestationDigest(f: PublicFacts) {
@@ -82,6 +96,7 @@ function publicAttestationDigest(f: PublicFacts) {
 	assert.equal(clientDigest.length, 32)
 	assert.equal(serverDigest.length, 32)
 	assert.equal(f.proofBundleHash.length, 32)
+	assert.equal(f.leafResultRoot.length, 32)
 
 	const proven = sha256(Buffer.concat([
 		Buffer.from(rangesHash(f.clientProven)),
@@ -101,14 +116,20 @@ function publicAttestationDigest(f: PublicFacts) {
 		Buffer.from(sha256(f.upstreamHost.toLowerCase())),
 		Buffer.from(sha256(f.model)),
 		Buffer.from(sha256(f.owner.toLowerCase())),
+		Buffer.from(sha256(f.provider)),
 		Buffer.from(f.proofBundleHash),
-		Buffer.from(sha256(f.circuitVersion)),
+		Buffer.from(f.leafResultRoot),
+		Buffer.from(sha256(f.circuitSetVersion)),
 	])
 	return { preimage, digest: sha256(preimage) }
 }
 
-const encodedClaimFixture = Buffer.from(
-	'ClaimTunnelRequest deterministic protobuf fixture: transcript + Groth16 chunks + owner signature',
+const encodedProofBundleFixture = Buffer.from(
+	'TokenswimProofBundleV1 deterministic protobuf fixture: ClaimTunnelRequest + signed leaf receipts',
+	'utf8',
+)
+const encodedLeafReceiptFixture = Buffer.from(
+	'leaf-0|chacha20|public-input-hash|proof-hash|tokenswim1prover|signature',
 	'utf8',
 )
 
@@ -131,28 +152,31 @@ const facts: PublicFacts = {
 	],
 	clientProven: [[0, 896]],
 	serverProven: [[2432, 3200]],
+	provider: 'tokenswimWindow',
 	upstreamHost: 'chatgpt.com',
 	model: 'gpt-5-codex',
 	owner: '0xffcf8fdee72ac11b5c542428b35eef5769c409f0',
-	proofBundleHash: proofBundleHash(encodedClaimFixture),
-	circuitVersion: 'reclaim-gnark-v0.14.0/chacha20@40c74b9e1c9f',
+	proofBundleHash: proofBundleHash(encodedProofBundleFixture),
+	leafResultRoot: leafResultRoot(encodedLeafReceiptFixture),
+	circuitSetVersion: 'reclaim-gnark-v0.14.0/chacha20@40c74b9e1c9f',
 }
 
-test('public attestation V2 is fixed-size, secret-free, signed, and bundle-bound', async () => {
+test('public attestation V2 is fixed-size, secret-free, signed, bundle-bound, and leaf-bound', async () => {
 	const { preimage, digest } = publicAttestationDigest(facts)
 	const forbidden = [
 		'/backend-api/codex/responses?secret=never-publish',
 		'Authorization',
 		'Bearer ',
 		'raw plaintext context',
-		encodedClaimFixture.toString('utf8'),
+		encodedProofBundleFixture.toString('utf8'),
+		encodedLeafReceiptFixture.toString('utf8'),
 	]
 	const text = preimage.toString('latin1')
 	for(const secret of forbidden) assert.equal(text.includes(secret), false)
 
-	// V1 was 285 bytes. V2 adds exactly two 32-byte commitments:
-	// proofBundleHash and SHA-256(circuitVersion), so the wire is 349 bytes.
-	assert.equal(preimage.length, 349)
+	// V1 was 285 bytes. V2 adds providerHash, proofBundleHash,
+	// leafResultRoot, and circuitSetHash: four fixed 32-byte commitments.
+	assert.equal(preimage.length, 413)
 	assert.equal(digest.length, 32)
 
 	const publicKey = ETH_SIGNATURE_PROVIDER.getPublicKey(PRIVATE_KEY)
@@ -160,22 +184,26 @@ test('public attestation V2 is fixed-size, secret-free, signed, and bundle-bound
 	const signature = await ETH_SIGNATURE_PROVIDER.sign(digest, PRIVATE_KEY)
 	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(digest, signature, address), true)
 
-	const modelMutated = publicAttestationDigest({ ...facts, model: 'gpt-5-codex-forged' }).digest
-	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(modelMutated, signature, address), false)
+	for(const mutated of [
+		publicAttestationDigest({ ...facts, model: 'gpt-5-codex-forged' }).digest,
+		publicAttestationDigest({ ...facts, provider: 'otherProvider' }).digest,
+		publicAttestationDigest({
+			...facts,
+			proofBundleHash: proofBundleHash(Buffer.from('different valid proof bundle', 'utf8')),
+		}).digest,
+		publicAttestationDigest({
+			...facts,
+			leafResultRoot: leafResultRoot(Buffer.from('different leaf receipts', 'utf8')),
+		}).digest,
+		publicAttestationDigest({
+			...facts,
+			circuitSetVersion: 'different-circuit-version',
+		}).digest,
+	]) {
+		assert.equal(await ETH_SIGNATURE_PROVIDER.verify(mutated, signature, address), false)
+	}
 
-	const bundleMutated = publicAttestationDigest({
-		...facts,
-		proofBundleHash: proofBundleHash(Buffer.from('different valid proof bundle', 'utf8')),
-	}).digest
-	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(bundleMutated, signature, address), false)
-
-	const circuitMutated = publicAttestationDigest({
-		...facts,
-		circuitVersion: 'different-circuit-version',
-	}).digest
-	assert.equal(await ETH_SIGNATURE_PROVIDER.verify(circuitMutated, signature, address), false)
-
-	console.log(`TOKENSWIM_PUBLIC_ATTESTATION_V2_VECTOR digest=0x${Buffer.from(digest).toString('hex')} bundle_hash=0x${Buffer.from(facts.proofBundleHash).toString('hex')} address=${address} signature=0x${Buffer.from(signature).toString('hex')}`)
+	console.log(`TOKENSWIM_PUBLIC_ATTESTATION_V2_VECTOR digest=0x${Buffer.from(digest).toString('hex')} bundle_hash=0x${Buffer.from(facts.proofBundleHash).toString('hex')} leaf_root=0x${Buffer.from(facts.leafResultRoot).toString('hex')} address=${address} signature=0x${Buffer.from(signature).toString('hex')}`)
 })
 
 function encodeVarint(value: number) {
@@ -204,7 +232,7 @@ test('current TypeScript ClaimTunnelResponse ignores additive public-attestation
 		},
 	})).finish()
 
-	const publicAttestation = new Uint8Array(349).fill(0xa5)
+	const publicAttestation = new Uint8Array(413).fill(0xa5)
 	const newerWire = Buffer.concat([
 		Buffer.from(legacy),
 		Buffer.from([0x2a]), // field 5, wire type 2
