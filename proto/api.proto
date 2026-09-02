@@ -160,6 +160,34 @@ message CreateTunnelRequest {
 	 * eg. "mystring12345", "something1234".
 	 */
 	string proxySessionId = 5;
+	/**
+	 * Tokenswim: the Witness route this session is relayed over, in the
+	 * order the hops are crossed, each one a "host:port".
+	 *
+	 * The route belongs to the session, not to the process. Carrying it
+	 * here is the whole reason this field exists: geoLocation and
+	 * proxySessionId both feed a proxy URL fixed at boot, so with them
+	 * alone every session on one attestor crosses the same first hop.
+	 *
+	 * The attestor dials route[0] and hands route[1:] on in the CONNECT
+	 * it sends through it, so the list is one shorter at every hop and
+	 * is absent at the egress. Leave empty for no Witness routing.
+	 */
+	repeated string route = 6;
+	/**
+	 * Tokenswim: the chain-allocated route slot this session is relayed
+	 * on, spelled the way it goes on the wire -- unpadded decimal, no
+	 * sign, no leading zeros.
+	 *
+	 * A string rather than a uint64 because the attestor never does
+	 * arithmetic on it, it only copies it into a header whose spelling
+	 * is normative. Carrying a number would make this end re-spell it,
+	 * and two spellings of one slot are two strings that a Witness log
+	 * or a chain comparison could tell apart.
+	 *
+	 * Required whenever route is non-empty.
+	 */
+	string routeSlotId = 7;
 }
 
 message FetchCertificateBytesRequest {

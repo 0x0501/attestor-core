@@ -469,6 +469,34 @@ export interface CreateTunnelRequest {
    * eg. "mystring12345", "something1234".
    */
   proxySessionId: string;
+  /**
+   * Tokenswim: the Witness route this session is relayed over, in the
+   * order the hops are crossed, each one a "host:port".
+   *
+   * The route belongs to the session, not to the process. Carrying it
+   * here is the whole reason this field exists: geoLocation and
+   * proxySessionId both feed a proxy URL fixed at boot, so with them
+   * alone every session on one attestor crosses the same first hop.
+   *
+   * The attestor dials route[0] and hands route[1:] on in the CONNECT
+   * it sends through it, so the list is one shorter at every hop and
+   * is absent at the egress. Leave empty for no Witness routing.
+   */
+  route: string[];
+  /**
+   * Tokenswim: the chain-allocated route slot this session is relayed
+   * on, spelled the way it goes on the wire -- unpadded decimal, no
+   * sign, no leading zeros.
+   *
+   * A string rather than a uint64 because the attestor never does
+   * arithmetic on it, it only copies it into a header whose spelling
+   * is normative. Carrying a number would make this end re-spell it,
+   * and two spellings of one slot are two strings that a Witness log
+   * or a chain comparison could tell apart.
+   *
+   * Required whenever route is non-empty.
+   */
+  routeSlotId: string;
 }
 
 export interface FetchCertificateBytesRequest {
@@ -1438,7 +1466,7 @@ export const ErrorData: MessageFns<ErrorData> = {
 };
 
 function createBaseCreateTunnelRequest(): CreateTunnelRequest {
-  return { id: 0, host: "", port: 0, geoLocation: "", proxySessionId: "" };
+  return { id: 0, host: "", port: 0, geoLocation: "", proxySessionId: "", route: [], routeSlotId: "" };
 }
 
 export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
@@ -1457,6 +1485,12 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
     }
     if (message.proxySessionId !== "") {
       writer.uint32(42).string(message.proxySessionId);
+    }
+    for (const v of message.route) {
+      writer.uint32(50).string(v!);
+    }
+    if (message.routeSlotId !== "") {
+      writer.uint32(58).string(message.routeSlotId);
     }
     return writer;
   },
@@ -1508,6 +1542,22 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
           message.proxySessionId = reader.string();
           continue;
         }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.route.push(reader.string());
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.routeSlotId = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1524,6 +1574,8 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
       port: isSet(object.port) ? globalThis.Number(object.port) : 0,
       geoLocation: isSet(object.geoLocation) ? globalThis.String(object.geoLocation) : "",
       proxySessionId: isSet(object.proxySessionId) ? globalThis.String(object.proxySessionId) : "",
+      route: globalThis.Array.isArray(object?.route) ? object.route.map((e: any) => globalThis.String(e)) : [],
+      routeSlotId: isSet(object.routeSlotId) ? globalThis.String(object.routeSlotId) : "",
     };
   },
 
@@ -1544,6 +1596,12 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
     if (message.proxySessionId !== "") {
       obj.proxySessionId = message.proxySessionId;
     }
+    if (message.route?.length) {
+      obj.route = message.route;
+    }
+    if (message.routeSlotId !== "") {
+      obj.routeSlotId = message.routeSlotId;
+    }
     return obj;
   },
 
@@ -1557,6 +1615,8 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
     message.port = object.port ?? 0;
     message.geoLocation = object.geoLocation ?? "";
     message.proxySessionId = object.proxySessionId ?? "";
+    message.route = object.route?.map((e) => e) || [];
+    message.routeSlotId = object.routeSlotId ?? "";
     return message;
   },
 };

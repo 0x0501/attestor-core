@@ -7,6 +7,7 @@ import type { CreateTunnelRequest } from '#src/proto/api.ts'
 import { getPublicAddresses } from '#src/server/utils/generics.ts'
 import { isValidCountryCode } from '#src/server/utils/iso.ts'
 import { isValidProxySessionId } from '#src/server/utils/proxy-session.ts'
+import { parseAdmittedWitnesses, planTokenswimRoute } from '#src/server/utils/tokenswim-route.ts'
 import type { Logger } from '#src/types/index.ts'
 import type { MakeTunnelFn, TCPSocketProperties } from '#src/types/index.ts'
 import { getEnvVariable } from '#src/utils/env.ts'
@@ -17,10 +18,19 @@ const HTTPS_PROXY_URL = getEnvVariable('HTTPS_PROXY_URL')
 // useful for testing. Use with caution in production.
 const ALLOWED_DIRECT_HOSTS = getEnvVariable('ALLOWED_DIRECT_HOSTS')
 	?.split(',')
+// Tokenswim: the Witness addresses a request may name as its first hop.
+// Empty means Witness routing is off, so a request that names a route is
+// refused rather than dialled -- an attestor with no list is not an open relay.
+const ADMITTED_WITNESSES = parseAdmittedWitnesses(
+	getEnvVariable('TOKENSWIM_ADMITTED_WITNESSES')
+)
 
-type ExtraOpts = Omit<CreateTunnelRequest, 'id' | 'initialMessage'> & {
-	logger: Logger
-}
+type ExtraOpts =
+	& Omit<CreateTunnelRequest, 'id' | 'initialMessage' | 'route' | 'routeSlotId'>
+	// Tokenswim: optional here though the proto always fills them, so a caller
+	// that predates Witness routing still typechecks.
+	& Partial<Pick<CreateTunnelRequest, 'route' | 'routeSlotId'>>
+	& { logger: Logger }
 
 interface ConnectResponse {
 	statusCode: number
@@ -227,11 +237,21 @@ async function _getSocket(
 		port,
 		geoLocation,
 		proxySessionId,
+		route,
+		routeSlotId,
 		logger
 	}: ExtraOpts,
 ) {
 	const socket = new Socket()
-	if((proxySessionId || geoLocation) && !HTTPS_PROXY_URL) {
+	// Tokenswim: a route the request names overrides the boot-time proxy
+	// entirely. It has to: the route belongs to the session, and a proxy URL
+	// fixed at boot makes every session on this attestor cross one first hop.
+	const routePlan = planTokenswimRoute(route, routeSlotId, ADMITTED_WITNESSES)
+	if(routePlan && !routePlan.ok) {
+		throw AttestorError.badRequest(routePlan.reason, { route, routeSlotId })
+	}
+
+	if(!routePlan && (proxySessionId || geoLocation) && !HTTPS_PROXY_URL) {
 		logger.warn(
 			{ geoLocation, proxySessionId },
 			'geoLocation or proxySessionId provided but no proxy URL found'
@@ -240,7 +260,7 @@ async function _getSocket(
 		proxySessionId = ''
 	}
 
-	if(!geoLocation && !proxySessionId) {
+	if(!routePlan && !geoLocation && !proxySessionId) {
 		socket.connect({ host, port, })
 		return socket
 	}
@@ -262,7 +282,7 @@ async function _getSocket(
 		)
 	}
 
-	const agentUrl = HTTPS_PROXY_URL!.replace(
+	const agentUrl = routePlan?.agentUrl || HTTPS_PROXY_URL!.replace(
 		'{{geoLocation}}',
 		geoLocation?.toLowerCase() || ''
 	).replace(
@@ -270,7 +290,7 @@ async function _getSocket(
 		proxySessionId ? `-session-${proxySessionId}` : ''
 	)
 
-	const agent = new HttpsProxyAgent(agentUrl)
+	const agent = new HttpsProxyAgent(agentUrl, { headers: routePlan?.headers })
 	const waitForProxyRes = new Promise<ConnectResponse>(resolve => {
 		// @ts-ignore
 		socket.once('proxyConnect', resolve)

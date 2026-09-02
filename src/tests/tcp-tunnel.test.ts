@@ -56,7 +56,11 @@ describe.skip('TCP Tunnel', () => {
 	}
 
 	it('should gracefully fail an invalid geoLocation or ip session id', async() => {
-		assert.rejects(
+		// Both of these were unawaited, so the assertion ran in a promise
+		// nothing observed and the test passed whatever makeTcpTunnel did.
+		// The expected message was wrong too: neither value reaches the proxy,
+		// so no status code is ever involved -- they are refused locally.
+		await assert.rejects(
 			async() => makeTcpTunnel({
 				host: 'lumtest.com',
 				port: 80,
@@ -65,12 +69,12 @@ describe.skip('TCP Tunnel', () => {
 				logger,
 			}),
 			(err: AttestorError) => {
-				assert.match(err.message, /failed with status code: 400/)
+				assert.match(err.message, /Geolocation "xz" is invalid/)
 				return true
 			}
 		)
 
-		assert.rejects(
+		await assert.rejects(
 			async() => makeTcpTunnel({
 				host: 'lumtest.com',
 				port: 80,
@@ -79,7 +83,7 @@ describe.skip('TCP Tunnel', () => {
 				logger,
 			}),
 			(err: AttestorError) => {
-				assert.match(err.message, /failed with status code: 400/)
+				assert.match(err.message, /proxySessionId "xz" is invalid/)
 				return true
 			}
 		)
