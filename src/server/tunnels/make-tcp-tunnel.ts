@@ -115,7 +115,8 @@ export const makeTcpTunnel: MakeTunnelFn<ExtraOpts, TCPSocketProperties> = async
 	}
 }
 
-async function connectTcp({ host, port, geoLocation, proxySessionId, logger }: ExtraOpts) {
+async function connectTcp(opts: ExtraOpts) {
+	const { host, port, logger } = opts
 	let connectTimeout: NodeJS.Timeout | undefined
 	let socket: Socket | undefined
 	try {
@@ -132,11 +133,13 @@ async function connectTcp({ host, port, geoLocation, proxySessionId, logger }: E
 					),
 					CONNECTION_TIMEOUT_MS
 				)
+				// The whole opts object, not a re-pack of it. Naming the
+				// fields here is how `route` and `routeSlotId` were dropped
+				// on the floor: the session carried a three-seat route, this
+				// function forwarded four fields, and the tunnel dialled the
+				// upstream direct and settled unwitnessed.
 				socket = await getSocket({
-					host,
-					port,
-					geoLocation,
-					proxySessionId,
+					...opts,
 					logger
 				})
 				socket.once('connect', resolve)
@@ -202,6 +205,15 @@ async function getSocket(opts: ExtraOpts) {
 
 			throw err
 		}
+	}
+
+	// A routed session is dialled by its last Witness, which is the egress
+	// (ADR 0036). Resolving the name here and handing an address on would put
+	// an IP in the CONNECT the Witness relays, so the Witness's own resolver
+	// overrides never apply and the host the chain records for the session is
+	// an address rather than the name the policy commits to.
+	if(opts.route?.length) {
+		return _getSocket(opts)
 	}
 
 	const addrs = ALLOWED_DIRECT_HOSTS?.includes(opts.host)

@@ -54,7 +54,8 @@ const BLS = bls12_381.longSignatures
 /**
  * Every Witness signs one commitment covering both directions at once:
  *
- *     SHA-256(clientDigest ‖ serverDigest)
+ *     SHA-256("TOKENSWIM_WITNESS_RECEIPT_V3\0" ‖ routeSlot ‖ transcriptRoot
+ *             ‖ clientDigest ‖ serverDigest ‖ clientLen ‖ serverLen ‖ leafCount)
  *
  * over the raw 32-byte digests, client first — not their hex spellings. Signing
  * each direction separately would double the signature count and prove nothing
@@ -443,9 +444,77 @@ export async function assertDigestsBindTheTranscript(
 	}
 }
 
+/**
+ * The domain tag and the field order of observation.Commitment in
+ * packages/relay-proof-go. A Witness signs seven fields, not two, and hashing
+ * the wrong preimage is indistinguishable from a bad signature -- which is how
+ * this read for a release: every witnessed session was refused with "did not
+ * sign the ciphertext this claim is about" while the chain, which computes the
+ * same commitment, accepted the identical receipts at anchor.
+ */
+const RECEIPT_DOMAIN_V3 = new TextEncoder().encode('TOKENSWIM_WITNESS_RECEIPT_V3\0')
+
+export type ReceiptFields = {
+	routeSlotId: number
+	transcriptRoot: Uint8Array
+	clientDigest: Uint8Array
+	serverDigest: Uint8Array
+	clientApplicationLen: number
+	serverApplicationLen: number
+	responseLeafCount: number
+}
+
+/**
+ * Builds the 153-byte preimage. The raw 32-byte digests go in, never their hex
+ * spellings: a signer that hashed the bytes and a verifier that hashed the
+ * spelling disagree on every session, and the disagreement looks like a forged
+ * signature rather than like a bug.
+ */
+export function receiptPreimageV3(f: ReceiptFields): Uint8Array {
+	for(const [name, digest] of [
+		['transcript_root', f.transcriptRoot],
+		['client_digest', f.clientDigest],
+		['server_digest', f.serverDigest],
+	] as const) {
+		if(digest.length !== 32) {
+			throw new Error(`${name} is ${digest.length} bytes, a digest is 32`)
+		}
+	}
+
+	const be64 = (n: number) => {
+		const out = new Uint8Array(8)
+		new DataView(out.buffer).setBigUint64(0, BigInt(n))
+		return out
+	}
+
+	const be32 = (n: number) => {
+		const out = new Uint8Array(4)
+		new DataView(out.buffer).setUint32(0, n)
+		return out
+	}
+
+	const parts = [
+		RECEIPT_DOMAIN_V3,
+		be64(f.routeSlotId),
+		f.transcriptRoot,
+		f.clientDigest,
+		f.serverDigest,
+		be64(f.clientApplicationLen),
+		be64(f.serverApplicationLen),
+		be32(f.responseLeafCount),
+	]
+	const joined = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+	let at = 0
+	for(const p of parts) {
+		joined.set(p, at)
+		at += p.length
+	}
+
+	return joined
+}
+
 export async function assertWitnessesSawTheSameBytes(
-	clientDigest: Uint8Array,
-	serverDigest: Uint8Array,
+	fields: ReceiptFields,
 	attestations: Attestation[] | undefined
 ) {
 	const witnesses = attestations ?? []
@@ -457,10 +526,9 @@ export async function assertWitnessesSawTheSameBytes(
 		)
 	}
 
-	const joined = new Uint8Array(clientDigest.length + serverDigest.length)
-	joined.set(clientDigest)
-	joined.set(serverDigest, clientDigest.length)
-	const commitment = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', joined))
+	const commitment = new Uint8Array(
+		await globalThis.crypto.subtle.digest('SHA-256', receiptPreimageV3(fields))
+	)
 	const message = BLS.hash(commitment)
 
 	const seen = new Set<string>()
@@ -759,7 +827,16 @@ const provider: Provider<'tokenswimWindow'> = {
 		const clientDigest = hexToBytes(params.clientDigest)
 		const serverDigest = hexToBytes(params.serverDigest)
 		const signatures = await assertWitnessesSawTheSameBytes(
-			clientDigest, serverDigest, params.witnesses
+			{
+				routeSlotId: params.routeSlotId,
+				transcriptRoot: hexToBytes(params.transcriptRoot),
+				clientDigest,
+				serverDigest,
+				clientApplicationLen: params.clientApplicationLen,
+				serverApplicationLen: params.serverApplicationLen,
+				responseLeafCount: params.responseLeafCount,
+			},
+			params.witnesses
 		)
 
 		const clientWindows = await deriveWindows(

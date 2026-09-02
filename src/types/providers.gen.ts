@@ -159,6 +159,19 @@ export interface TokenswimWindowParameters {
 		signature: string
 	}[]
 	/**
+	 * The rest of what each Witness signature covers. A receipt commits to the
+	 * route slot, the transcript root, both digests, both application lengths
+	 * and the response leaf count under a domain tag -- seven fields, of which
+	 * the two digests above are two. Without these five a verifier cannot
+	 * rebuild the message that was signed, so it can check nothing.
+	 */
+	routeSlotId: number
+	/** hex, 32 bytes: the Merkle root over the server-direction leaves */
+	transcriptRoot: string
+	clientApplicationLen: number
+	serverApplicationLen: number
+	responseLeafCount: number
+	/**
 	 * [from, to) over the client direction, revealed on top of the challenged
 	 * windows because it names the model. Absent when the request named none.
 	 */
@@ -209,6 +222,11 @@ export const TokenswimWindowParametersJson = {
 				additionalProperties: false,
 			},
 		},
+		routeSlotId: { type: 'number' },
+		transcriptRoot: { type: 'string' },
+		clientApplicationLen: { type: 'number' },
+		serverApplicationLen: { type: 'number' },
+		responseLeafCount: { type: 'number' },
 		modelChunk: {
 			type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2,
 		},
@@ -219,6 +237,8 @@ export const TokenswimWindowParametersJson = {
 	required: [
 		'url', 'method', 'clientDigest', 'serverDigest', 'windowCount', 'witnesses',
 		'clientLength', 'serverLength', 'clientProven', 'serverProven',
+		'routeSlotId', 'transcriptRoot', 'clientApplicationLen',
+		'serverApplicationLen', 'responseLeafCount',
 	],
 	additionalProperties: false,
 }
