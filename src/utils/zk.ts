@@ -366,7 +366,15 @@ export async function makeZkProofGenerator(
 		}: ZKProofToGenerate
 	): Promise<ZKProof> {
 		const operator = getZkOperatorForAlgorithm(algorithm)
-		const redactionMask = redactionMaskFor(algorithm, redactedPlaintext)
+		// Only the gnark circuits take a mask. snarkjs and stwo publish the
+		// cipher's whole output, so a masked public signal would not be the
+		// value their circuits committed to and every proof would be refused.
+		// Their disclosure granularity is still the circuit's width rather
+		// than the reveal's; that is a property of those circuits, not
+		// something this can fix from here.
+		const redactionMask = zkEngine === 'gnark'
+			? redactionMaskFor(algorithm, redactedPlaintext)
+			: undefined
 		const proof = await generateProof(
 			{ algorithm, privateInput, publicInput, operator, logger, redactionMask }
 		)
@@ -380,7 +388,7 @@ export async function makeZkProofGenerator(
 			decryptedRedactedCiphertext: proof.plaintext || new Uint8Array(),
 			redactedPlaintext,
 			startIdx,
-			redactionMask
+			redactionMask: redactionMask || new Uint8Array()
 		}
 	}
 
@@ -535,7 +543,7 @@ export async function verifyZkPacket(
 		// the alternative -- treating a missing mask as "disclose everything"
 		// -- verifies against a circuit that republishes the keystream for
 		// every byte the prover meant to withhold.
-		if(!redactionMask?.length) {
+		if(zkEngine === 'gnark' && !redactionMask?.length) {
 			throw new Error('ZK proof carries no redaction mask')
 		}
 
@@ -544,7 +552,7 @@ export async function verifyZkPacket(
 		// below would accept a claimed plaintext of 0 at that position as
 		// "proven". It is not proven -- nothing about that byte was. Only the
 		// redaction marker may stand there.
-		for(let i = 0;i < redactedPlaintext.length;i++) {
+		for(let i = 0;redactionMask?.length && i < redactedPlaintext.length;i++) {
 			if(!redactionMask[i] && redactedPlaintext[i] !== REDACTION_CHAR_CODE) {
 				throw new Error(
 					`byte ${i} is withheld by the mask but claimed as plaintext`
@@ -590,7 +598,7 @@ export async function verifyZkPacket(
 					plaintext: decryptedRedactedCiphertext,
 				},
 				publicInput: ciphertextInput,
-				redactionMask,
+				redactionMask: redactionMask?.length ? redactionMask : undefined,
 				logger,
 				operator: getZkOperator()
 			}
