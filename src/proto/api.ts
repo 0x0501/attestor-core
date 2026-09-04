@@ -582,6 +582,20 @@ export interface MessageReveal_ZKProof {
    */
   startIdx: number;
   proofData: Uint8Array;
+  /**
+   * The circuit's public per-byte redaction mask, one entry per byte of
+   * the circuit's fixed chunk width: 1 discloses the plaintext at that
+   * position, 0 constrains the circuit's output to zero there.
+   *
+   * This is a public input to the proof, so verification without it is
+   * impossible; the circuits deliberately refuse to default it, because a
+   * missing mask read as "disclose everything" would republish the
+   * keystream for every byte the prover meant to withhold. It is not
+   * derivable from redactedPlaintext either: '*' is a legal plaintext
+   * byte, and the mask covers the zero-extension past the end of a short
+   * chunk that redactedPlaintext does not reach.
+   */
+  redactionMask: Uint8Array;
 }
 
 export interface MessageReveal_TOPRFProof {
@@ -2346,6 +2360,7 @@ function createBaseMessageReveal_ZKProof(): MessageReveal_ZKProof {
     redactedPlaintext: new Uint8Array(0),
     startIdx: 0,
     proofData: new Uint8Array(0),
+    redactionMask: new Uint8Array(0),
   };
 }
 
@@ -2362,6 +2377,9 @@ export const MessageReveal_ZKProof: MessageFns<MessageReveal_ZKProof> = {
     }
     if (message.proofData.length !== 0) {
       writer.uint32(42).bytes(message.proofData);
+    }
+    if (message.redactionMask.length !== 0) {
+      writer.uint32(50).bytes(message.redactionMask);
     }
     return writer;
   },
@@ -2405,6 +2423,14 @@ export const MessageReveal_ZKProof: MessageFns<MessageReveal_ZKProof> = {
           message.proofData = reader.bytes();
           continue;
         }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.redactionMask = reader.bytes();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2424,6 +2450,7 @@ export const MessageReveal_ZKProof: MessageFns<MessageReveal_ZKProof> = {
         : new Uint8Array(0),
       startIdx: isSet(object.startIdx) ? globalThis.Number(object.startIdx) : 0,
       proofData: isSet(object.proofData) ? bytesFromBase64(object.proofData) : new Uint8Array(0),
+      redactionMask: isSet(object.redactionMask) ? bytesFromBase64(object.redactionMask) : new Uint8Array(0),
     };
   },
 
@@ -2441,6 +2468,9 @@ export const MessageReveal_ZKProof: MessageFns<MessageReveal_ZKProof> = {
     if (message.proofData.length !== 0) {
       obj.proofData = base64FromBytes(message.proofData);
     }
+    if (message.redactionMask.length !== 0) {
+      obj.redactionMask = base64FromBytes(message.redactionMask);
+    }
     return obj;
   },
 
@@ -2453,6 +2483,7 @@ export const MessageReveal_ZKProof: MessageFns<MessageReveal_ZKProof> = {
     message.redactedPlaintext = object.redactedPlaintext ?? new Uint8Array(0);
     message.startIdx = object.startIdx ?? 0;
     message.proofData = object.proofData ?? new Uint8Array(0);
+    message.redactionMask = object.redactionMask ?? new Uint8Array(0);
     return message;
   },
 };

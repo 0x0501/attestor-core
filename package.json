@@ -54,7 +54,7 @@
     "generate:avs": "typechain --target ethers-v6 --out-dir src/avs/contracts avs/contracts/out/ReclaimServiceManager.sol/*.json",
     "start:chain": "bash ./avs/utils/anvil/start-anvil-chain-with-el-and-avs-deployed.sh",
     "commitlint": "commitlint --edit",
-    "download:zk-files": "node node_modules/@reclaimprotocol/zk-symmetric-crypto/lib/scripts/download-files",
+    "download:zk-files": "echo 'refusing to fetch the Reclaim circuits: they publish the keystream for every byte of a chunk. run ../build.sh, which installs the 0x0501/zk-symmetric-crypto fork.' >&2 && exit 1",
     "generate:toprf-keys": "npm run run:tsc -- src/scripts/generate-toprf-keys.ts"
   },
   "files": [

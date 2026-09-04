@@ -271,6 +271,20 @@ message MessageReveal {
 		uint32 startIdx = 4;
 
 		bytes proofData = 5;
+		/**
+		* The circuit's public per-byte redaction mask, one entry per byte of
+		* the circuit's fixed chunk width: 1 discloses the plaintext at that
+		* position, 0 constrains the circuit's output to zero there.
+		*
+		* This is a public input to the proof, so verification without it is
+		* impossible; the circuits deliberately refuse to default it, because a
+		* missing mask read as "disclose everything" would republish the
+		* keystream for every byte the prover meant to withhold. It is not
+		* derivable from redactedPlaintext either: '*' is a legal plaintext
+		* byte, and the mask covers the zero-extension past the end of a short
+		* chunk that redactedPlaintext does not reach.
+		*/
+		bytes redactionMask = 6;
 	}
 
 	message TOPRFProof {

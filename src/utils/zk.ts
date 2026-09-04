@@ -366,8 +366,9 @@ export async function makeZkProofGenerator(
 		}: ZKProofToGenerate
 	): Promise<ZKProof> {
 		const operator = getZkOperatorForAlgorithm(algorithm)
+		const redactionMask = redactionMaskFor(algorithm, redactedPlaintext)
 		const proof = await generateProof(
-			{ algorithm, privateInput, publicInput, operator, logger }
+			{ algorithm, privateInput, publicInput, operator, logger, redactionMask }
 		)
 
 		logger?.debug({ startIdx }, 'generated proof for chunk')
@@ -378,7 +379,8 @@ export async function makeZkProofGenerator(
 				: proof.proofData,
 			decryptedRedactedCiphertext: proof.plaintext || new Uint8Array(),
 			redactedPlaintext,
-			startIdx
+			startIdx,
+			redactionMask
 		}
 	}
 
@@ -525,8 +527,30 @@ export async function verifyZkPacket(
 			decryptedRedactedCiphertext,
 			redactedPlaintext,
 			startIdx,
+			redactionMask,
 		}: ZKProof,
 	) {
+		// The mask is a public input to the circuit, so a proof cannot be
+		// checked without it. Refusing here is the whole point of the field:
+		// the alternative -- treating a missing mask as "disclose everything"
+		// -- verifies against a circuit that republishes the keystream for
+		// every byte the prover meant to withhold.
+		if(!redactionMask?.length) {
+			throw new Error('ZK proof carries no redaction mask')
+		}
+
+		// Where the mask withholds a byte the circuit's output is constrained
+		// to zero rather than to the plaintext, so `isRedactionCongruent`
+		// below would accept a claimed plaintext of 0 at that position as
+		// "proven". It is not proven -- nothing about that byte was. Only the
+		// redaction marker may stand there.
+		for(let i = 0;i < redactedPlaintext.length;i++) {
+			if(!redactionMask[i] && redactedPlaintext[i] !== REDACTION_CHAR_CODE) {
+				throw new Error(
+					`byte ${i} is withheld by the mask but claimed as plaintext`
+				)
+			}
+		}
 		// get the ciphertext chunk we received from the server
 		// the ZK library, will verify that the decrypted redacted
 		// ciphertext matches the ciphertext received from the server
@@ -566,6 +590,7 @@ export async function verifyZkPacket(
 					plaintext: decryptedRedactedCiphertext,
 				},
 				publicInput: ciphertextInput,
+				redactionMask,
 				logger,
 				operator: getZkOperator()
 			}
@@ -690,6 +715,27 @@ export async function verifyZkPacket(
 		return oprfOperators?.[algorithm]
 			|| makeDefaultOPRFOperator(algorithm, zkEngine, logger)
 	}
+}
+
+/**
+ * The circuit's public per-byte redaction mask for a chunk this attestor is
+ * proving itself: 1 where the reveal discloses the plaintext, 0 where it does
+ * not, zero-extended to the circuit's fixed width.
+ *
+ * Withholding the zero-extension matters as much as withholding a redacted
+ * byte: those positions carry no ciphertext, so disclosing them would publish
+ * raw keystream in exchange for nothing.
+ */
+function redactionMaskFor(
+	algorithm: EncryptionAlgorithm,
+	redactedPlaintext: Uint8Array
+) {
+	const mask = new Uint8Array(getChunkSizeBytes(algorithm))
+	for(let i = 0;i < redactedPlaintext.length && i < mask.length;i++) {
+		mask[i] = redactedPlaintext[i] === REDACTION_CHAR_CODE ? 0 : 1
+	}
+
+	return mask
 }
 
 // the chunk size of the ZK circuit in bytes
