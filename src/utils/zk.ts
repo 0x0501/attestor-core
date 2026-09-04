@@ -70,6 +70,7 @@ type GenerateZKChunkProofOpts = {
 	redactedPlaintext: Uint8Array
 
 	slice: ArraySlice
+	zkEngine: ZKEngine
 }
 
 type GenerateTOPRFChunkProofOpts = {
@@ -281,7 +282,7 @@ export async function makeZkProofGenerator(
 				}
 
 				const proofParams = getProofGenerationParamsForSlice(
-					{ key, iv, ciphertext, redactedPlaintext, slice }
+					{ key, iv, ciphertext, redactedPlaintext, slice, zkEngine }
 				)
 
 				if(!proofParams) {
@@ -564,15 +565,7 @@ export async function verifyZkPacket(
 		// ciphertext matches the ciphertext received from the server
 		const ciphertextChunkEnd = startIdx + redactedPlaintext.length
 		const ciphertextChunk = ciphertext.slice(startIdx, ciphertextChunkEnd)
-		// redact ciphertext if plaintext is redacted
-		// to prepare for decryption in ZK circuit
-		// the ZK circuit will take in the redacted ciphertext,
-		// which shall produce the redacted plaintext
-		for(let i = 0; i < ciphertextChunk.length; i++) {
-			if(redactedPlaintext[i] === REDACTION_CHAR_CODE) {
-				ciphertextChunk[i] = REDACTION_CHAR_CODE
-			}
-		}
+		redactCiphertextForEngine(zkEngine, ciphertextChunk, redactedPlaintext)
 
 		let nonce = concatenateUint8Arrays([iv, recordIV])
 		if(!recordIV.length) {
@@ -875,6 +868,38 @@ export function getEngineProto(engine: ZKEngine) {
 	throw new Error(`Unknown ZK engine: ${engine}`)
 }
 
+/**
+ * Replace a withheld byte of the published ciphertext with the redaction
+ * marker -- for the engines whose circuits still need it.
+ *
+ * The gnark circuits do not. They take a public per-byte mask and constrain
+ * the published output to zero where a byte is withheld, so the prover
+ * publishes the ciphertext as it was sent (see the Tokenswim relay's
+ * proof_plan.go, which stopped substituting when the mask landed).
+ * Substituting here as well changes the circuit's public input on one side
+ * only, and every proof a masking prover produces is then refused as
+ * `invalid proof` -- which is exactly what happened between the relay's
+ * change and this one.
+ *
+ * snarkjs and stwo publish the cipher's whole output and have no mask, so
+ * the marker is still the only thing withholding a byte from them.
+ */
+function redactCiphertextForEngine(
+	zkEngine: ZKEngine,
+	ciphertextChunk: Uint8Array,
+	redactedPlaintext: Uint8Array
+) {
+	if(zkEngine === 'gnark') {
+		return
+	}
+
+	for(let i = 0; i < ciphertextChunk.length; i++) {
+		if(redactedPlaintext[i] === REDACTION_CHAR_CODE) {
+			ciphertextChunk[i] = REDACTION_CHAR_CODE
+		}
+	}
+}
+
 function getProofGenerationParamsForSlice(
 	{
 		key,
@@ -882,6 +907,7 @@ function getProofGenerationParamsForSlice(
 		ciphertext,
 		redactedPlaintext,
 		slice: { fromIndex, toIndex },
+		zkEngine,
 	}: GenerateZKChunkProofOpts,
 ): ZKProofToGenerate | undefined {
 	const ciphertextChunk = ciphertext.slice(fromIndex, toIndex)
@@ -890,15 +916,7 @@ function getProofGenerationParamsForSlice(
 		return
 	}
 
-	// redact ciphertext if plaintext is redacted
-	// to prepare for decryption in ZK circuit
-	// the ZK circuit will take in the redacted ciphertext,
-	// which shall produce the redacted plaintext
-	for(let i = 0; i < ciphertextChunk.length; i++) {
-		if(plaintextChunk[i] === REDACTION_CHAR_CODE) {
-			ciphertextChunk[i] = REDACTION_CHAR_CODE
-		}
-	}
+	redactCiphertextForEngine(zkEngine, ciphertextChunk, plaintextChunk)
 
 	return {
 		startIdx: fromIndex,
