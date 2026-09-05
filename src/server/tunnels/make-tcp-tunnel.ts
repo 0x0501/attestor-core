@@ -313,7 +313,16 @@ async function _getSocket(
 		// expects an http request object
 		// @ts-ignore
 		socket,
-		{ host, port, timeout: CONNECTION_TIMEOUT_MS }
+		{
+			host,
+			port,
+			timeout: CONNECTION_TIMEOUT_MS,
+			// Opaque TCP: the caller (relay uTLS) owns the handshake. Leaving
+			// this unset lets agent-base guess from the stack and wrap CONNECT
+			// in a second TLS session, which the Witness then observes instead
+			// of the session being proved.
+			secureEndpoint: false,
+		}
 	)
 
 	const res = await waitForProxyRes
@@ -331,6 +340,12 @@ async function _getSocket(
 			}
 		)
 	}
+
+	// agent.connect is meant to be called from http(s).Agent, which emits
+	// 'socket' so the library can resume after parsing CONNECT in paused
+	// mode. Called directly, that event never fires and ServerHello sits
+	// unread until the handshake times out as EOF.
+	proxySocket.resume()
 
 	process.nextTick(() => {
 		// ensure connect event is emitted
