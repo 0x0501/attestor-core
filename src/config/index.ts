@@ -53,14 +53,30 @@ export const MAX_NO_DATA_INTERVAL_MS = 30_000
 // *whole* session transcript in one message -- Transcript.Messages()
 // (apps/relay/internal/relay/transcript.go) walks every entry in both
 // directions, ciphertext plus per-record reveal keys, and relay ships that
-// as a single ClaimTunnelRequest over this same socket. The chain's own
-// ceilings on that transcript are already tens of MiB before framing and
-// reveal overhead (MaxPayloadBytesCeiling = 32 MiB response bytes,
-// apps/net/x/provider/types/params.go; MaxPrivateArtifactBytes = 64 MiB,
-// packages/proof-protocol/validate/validate.go) and grow if either is
-// raised, so this is headroom for a whole-session upload, not a chunk.
-// Without it `ws` falls back to its own undocumented 100MB default, which a
-// large session could silently exceed.
+// as a single ClaimTunnelRequest over this same socket.
+//
+// What that message can weigh is a formula, not a constant to copy here.
+// The transcript is wire bytes, so its ceiling is
+// `transcript.MaxLeaves * (MaxChunkBytes + record overhead)`
+// (packages/proof-protocol/transcript/tree.go and partition.go). A TLS 1.3
+// record costs 22 bytes around its body -- 5 header, 16 GCM tag, 1 inner
+// content type -- and the worst case is one record per leaf, so the widest
+// leaf costs 64 + 22 = 86 wire bytes. At the leaf ceiling this build ships
+// that is about 215 MiB, plus a per-record reveal key and protobuf framing
+// on top, against the 512 MiB below.
+//
+// Written as the formula deliberately: a number here would be stale the
+// moment MaxLeaves moved, and it has moved once already. Do not size this
+// off `MaxPayloadBytesCeiling` or `MaxPrivateArtifactBytes` either -- the
+// version of this comment that did was wrong in a way that read as
+// reassuring, because neither of those bounds this message. One is a policy
+// ceiling on *plaintext* response bytes and the other bounds a JSON artifact
+// that never crosses this socket; the transcript is ciphertext plus record
+// framing, and it is larger than both.
+//
+// Without `maxPayload` set at all, `ws` falls back to its own undocumented
+// 100MB default -- under the ceiling above, so a large session would have
+// been dropped at the socket with no error worth reading.
 //
 // Asymmetric with relay's own receive side
 // (apps/relay/internal/attestor/client.go): that reads individual
