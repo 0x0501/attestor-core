@@ -46,6 +46,28 @@ export const PING_INTERVAL_MS = 10_000
  */
 export const MAX_NO_DATA_INTERVAL_MS = 30_000
 
+// Passed as `maxPayload` when the WebSocketServer is constructed
+// (src/server/create-server.ts). Sized for `claimTunnel`, not for the
+// tunnel-chunk stream: relay's submitClaim
+// (apps/relay/internal/relayserver/proven.go) hands Client.ClaimTunnel the
+// *whole* session transcript in one message -- Transcript.Messages()
+// (apps/relay/internal/relay/transcript.go) walks every entry in both
+// directions, ciphertext plus per-record reveal keys, and relay ships that
+// as a single ClaimTunnelRequest over this same socket. The chain's own
+// ceilings on that transcript are already tens of MiB before framing and
+// reveal overhead (MaxPayloadBytesCeiling = 32 MiB response bytes,
+// apps/net/x/provider/types/params.go; MaxPrivateArtifactBytes = 64 MiB,
+// packages/proof-protocol/validate/validate.go) and grow if either is
+// raised, so this is headroom for a whole-session upload, not a chunk.
+// Without it `ws` falls back to its own undocumented 100MB default, which a
+// large session could silently exceed.
+//
+// Asymmetric with relay's own receive side
+// (apps/relay/internal/attestor/client.go): that reads individual
+// TunnelMessage frames streamed back from the attestor in the *other*
+// direction, each one upstream TCP read/TLS record and orders of magnitude
+// smaller. Different job, different number -- don't size the two off each
+// other.
 export const MAX_PAYLOAD_SIZE = 512 * 1024 * 1024 // 512MB
 
 export const DEFAULT_AUTH_EXPIRY_S = 15 * 60 // 15m
@@ -54,7 +76,7 @@ export const DEFAULT_RPC_TIMEOUT_MS = 90_000
 
 export const TOPRF_DOMAIN_SEPARATOR = 'reclaim-toprf'
 
-export const MAX_CERT_SIZE_BYTES = 10 * 1024 * 1024 * 1024 // 10MB
+export const MAX_CERT_SIZE_BYTES = 10 * 1024 * 1024 // 10MB
 
 export const CERT_ALLOWED_MIMETYPES = [
 	'application/x-x509-ca-cert',

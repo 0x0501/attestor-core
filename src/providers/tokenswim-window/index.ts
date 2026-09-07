@@ -31,11 +31,23 @@ export const WINDOW_BYTES = 128
 
 /**
  * The floor on how many Witnesses seed one proof. One Witness that the relay
- * operator also runs is no Witness at all. There is deliberately no ceiling:
+ * operator also runs is no Witness at all. Nothing here enforces a ceiling:
  * every Witness added past the floor puts another signature into the seed, and
- * the chain is meant to grow.
+ * the chain is meant to grow — but the chain is also where the ceiling
+ * actually lives: `MaxWitnessReceipts` in
+ * `packages/proof-protocol/validate/validate.go` and `MinWitnessesCeiling` in
+ * `apps/net/x/provider/types/params.go` both cap it at 16. A claim built past
+ * that many attestations is this same bug at the other end: accepted here,
+ * relayed, answered 200, and refused at anchoring. Left unmirrored on
+ * purpose — a ceiling here is a separate decision, not bundled into this fix.
+ *
+ * Must equal `MinWitnesses` in `packages/relay-proof-go/challenge/challenge.go`,
+ * `MinWitnessesFloor` in `apps/net/x/provider/types/params.go`, and
+ * `MinWitnessReceipts` in `packages/proof-protocol/validate/validate.go` — a
+ * value one validator accepts and another rejects is a proof nobody can both
+ * build and anchor.
  */
-export const MIN_WITNESSES = 2
+export const MIN_WITNESSES = 3
 
 /**
  * BLS12-381 in the IETF basic scheme — public key in G1, signature in G2 — which

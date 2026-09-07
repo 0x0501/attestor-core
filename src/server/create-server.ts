@@ -5,7 +5,7 @@ import type { Duplex } from 'stream'
 import type { WebSocket } from 'ws'
 import { WebSocketServer } from 'ws'
 
-import { API_SERVER_PORT, ATTESTOR_ADDRESS_PATHNAME, BROWSER_RPC_PATHNAME, WS_PATHNAME } from '#src/config/index.ts'
+import { API_SERVER_PORT, ATTESTOR_ADDRESS_PATHNAME, BROWSER_RPC_PATHNAME, MAX_PAYLOAD_SIZE, WS_PATHNAME } from '#src/config/index.ts'
 import { AttestorServerSocket } from '#src/server/socket.ts'
 import { getAttestorAddress } from '#src/server/utils/generics.ts'
 import { addKeepAlive } from '#src/server/utils/keep-alive.ts'
@@ -44,7 +44,7 @@ export async function createServer(port = PORT) {
 		? createBgpListener(LOGGER.child({ service: 'bgp-listener' }))
 		: undefined
 
-	const wss = new WebSocketServer({ noServer: true })
+	const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_SIZE })
 	http.on('upgrade', handleUpgrade.bind(wss))
 	http.on('request', (req, res) => {
 		const url = URL.parse(req.url || '', 'http://localhost')
