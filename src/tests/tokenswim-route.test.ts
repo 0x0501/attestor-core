@@ -2,7 +2,6 @@ import assert from 'node:assert'
 import { describe, it } from 'node:test'
 import {
 	MAX_ROUTE_HOPS,
-	parseAdmittedWitnesses,
 	planTokenswimRoute,
 	ROUTE_HEADER,
 	ROUTE_SLOT_HEADER,
@@ -90,12 +89,6 @@ describe('tokenswim route: the open-relay guard', () => {
 
 	it('does not admit a first hop by way of a later one', () => {
 		assert.match(refusal(['10.0.0.1:8443', W1]), /not an admitted Witness address/)
-	})
-
-	it('reads the admitted set as a trimmed, non-empty comma list', () => {
-		assert.deepEqual(parseAdmittedWitnesses(` ${W1} , ${W2} ,, `), [W1, W2])
-		assert.deepEqual(parseAdmittedWitnesses(''), [])
-		assert.deepEqual(parseAdmittedWitnesses(undefined), [])
 	})
 })
 

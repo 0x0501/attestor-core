@@ -7,23 +7,42 @@ import type { CreateTunnelRequest } from '#src/proto/api.ts'
 import { getPublicAddresses } from '#src/server/utils/generics.ts'
 import { isValidCountryCode } from '#src/server/utils/iso.ts'
 import { isValidProxySessionId } from '#src/server/utils/proxy-session.ts'
-import { parseAdmittedWitnesses, planTokenswimRoute } from '#src/server/utils/tokenswim-route.ts'
+import { admittedWitnesses, startRosterRefresh } from '#src/server/utils/tokenswim-roster.ts'
+import { planTokenswimRoute } from '#src/server/utils/tokenswim-route.ts'
 import type { Logger } from '#src/types/index.ts'
 import type { MakeTunnelFn, TCPSocketProperties } from '#src/types/index.ts'
 import { getEnvVariable } from '#src/utils/env.ts'
-import { AttestorError } from '#src/utils/index.ts'
+import { AttestorError, logger as rootLogger } from '#src/utils/index.ts'
 
 const HTTPS_PROXY_URL = getEnvVariable('HTTPS_PROXY_URL')
 // allow these hosts to be directed w/o any IP resolution checks,
 // useful for testing. Use with caution in production.
 const ALLOWED_DIRECT_HOSTS = getEnvVariable('ALLOWED_DIRECT_HOSTS')
 	?.split(',')
-// Tokenswim: the Witness addresses a request may name as its first hop.
-// Empty means Witness routing is off, so a request that names a route is
-// refused rather than dialled -- an attestor with no list is not an open relay.
-const ADMITTED_WITNESSES = parseAdmittedWitnesses(
-	getEnvVariable('TOKENSWIM_ADMITTED_WITNESSES')
-)
+// Tokenswim: the Witness addresses a request may name as its first hop, read
+// off the chain instead of configured. A Witness's observations listener
+// answers GET /v1/witnesses with the admitted roster, so an operator who
+// stakes becomes dialable as soon as the chain says so; the hand-kept list
+// this replaces went stale the moment a fourth Witness was admitted.
+//
+// Unset means Witness routing is off and every route is refused, which is the
+// same fail-closed shape the empty hand-kept list had. It is loud rather than
+// silent because it is not a mode anyone wants in production -- a Proof Pool
+// attestor that refuses every route serves every Request unwitnessed.
+const ROSTER_URL = getEnvVariable('TOKENSWIM_WITNESS_ROSTER_URL')
+// Junk and empty both fall back to the default: this knob only exists to slow
+// the poll down on a busy chain, and no value of it is worth failing boot over.
+const ROSTER_REFRESH_MS =
+	Number(getEnvVariable('TOKENSWIM_WITNESS_ROSTER_REFRESH_MS')) || 60_000
+if(ROSTER_URL) {
+	void startRosterRefresh(ROSTER_URL, ROSTER_REFRESH_MS, err => {
+		rootLogger.warn({ err, url: ROSTER_URL }, 'failed to refresh the Witness roster; keeping the last good one')
+	})
+} else {
+	rootLogger.warn(
+		'TOKENSWIM_WITNESS_ROSTER_URL is unset; every routed session will be refused'
+	)
+}
 
 type ExtraOpts =
 	& Omit<CreateTunnelRequest, 'id' | 'initialMessage' | 'route' | 'routeSlotId'>
@@ -258,7 +277,10 @@ async function _getSocket(
 	// Tokenswim: a route the request names overrides the boot-time proxy
 	// entirely. It has to: the route belongs to the session, and a proxy URL
 	// fixed at boot makes every session on this attestor cross one first hop.
-	const routePlan = planTokenswimRoute(route, routeSlotId, ADMITTED_WITNESSES)
+	// Read per session, not once at module load: the roster is refreshed for the
+	// life of the process, and a hoisted copy would pin this attestor to whoever
+	// was admitted at boot -- the exact staleness reading it off the chain fixes.
+	const routePlan = planTokenswimRoute(route, routeSlotId, admittedWitnesses())
 	if(routePlan && !routePlan.ok) {
 		throw AttestorError.badRequest(routePlan.reason, { route, routeSlotId })
 	}

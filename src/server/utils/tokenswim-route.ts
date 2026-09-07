@@ -52,18 +52,6 @@ export type RoutePlan =
 	| { readonly ok: false, readonly reason: string }
 
 /**
- * Reads the set of Witness addresses this attestor may dial as a first hop.
- *
- * The list is a snapshot of the chain's admitted Witness endpoints, held as
- * process config because that is the shape of the thing: it changes when the
- * chain admits or retires a Witness, not per session. The chain stays the
- * authority; this is the operator's copy of its answer.
- */
-export function parseAdmittedWitnesses(raw: string | undefined): string[] {
-	return raw?.split(',').map(v => v.trim()).filter(v => v !== '') ?? []
-}
-
-/**
  * Builds the plan for a request-borne route, or refuses it with a reason.
  *
  * Returns undefined when the request names no route at all, which leaves
