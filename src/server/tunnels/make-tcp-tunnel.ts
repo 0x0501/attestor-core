@@ -69,7 +69,14 @@ interface ConnectResponse {
  * this tunnel to the end host.
  * https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods/CONNECT
  *
- * The tunnel also retains a transcript of all messages sent and received.
+ * The tunnel counts the bytes that cross it and keeps none of them. It used to
+ * keep every message for the lifetime of the session, to be compared against
+ * the claim in `claimTunnel` -- a comparison that ADR 0036 makes worthless
+ * (an observer Tokenswim operates, agreeing with itself) and ADR 0040 makes
+ * redundant (`assertValidClaimRequest` recomputes the ciphertext digests the
+ * Witnesses signed, which is the binding strictly stronger than this one). It
+ * cost a full second copy of the transcript per live session; the count is
+ * what the APM label actually wanted.
  */
 export const makeTcpTunnel: MakeTunnelFn<ExtraOpts, TCPSocketProperties> = async({
 	onClose,
@@ -77,7 +84,7 @@ export const makeTcpTunnel: MakeTunnelFn<ExtraOpts, TCPSocketProperties> = async
 	logger,
 	...opts
 }) => {
-	const transcript: TCPSocketProperties['transcript'] = []
+	let bytes = 0
 	const socket = await connectTcp({ ...opts, logger })
 
 	let closed = false
@@ -89,7 +96,7 @@ export const makeTcpTunnel: MakeTunnelFn<ExtraOpts, TCPSocketProperties> = async
 		}
 
 		onMessage?.(message)
-		transcript.push({ sender: 'server', message })
+		bytes += message.length
 	})
 
 	// socket.once('error', onSocketClose)
@@ -97,10 +104,10 @@ export const makeTcpTunnel: MakeTunnelFn<ExtraOpts, TCPSocketProperties> = async
 
 	return {
 		socket,
-		transcript,
+		transcriptBytes: () => bytes,
 		createRequest: opts,
 		async write(data) {
-			transcript.push({ sender: 'client', message: data })
+			bytes += data.length
 			await new Promise<void>((resolve, reject) => {
 				socket.write(data, err => {
 					if(err) {

@@ -1,7 +1,7 @@
 import { MAX_CLAIM_TIMESTAMP_DIFF_S } from '#src/config/index.ts'
 import { ClaimTunnelResponse } from '#src/proto/api.ts'
 import { getApm } from '#src/server/utils/apm.ts'
-import { assertTranscriptsMatch, assertValidClaimRequest } from '#src/server/utils/assert-valid-claim-request.ts'
+import { assertValidClaimRequest } from '#src/server/utils/assert-valid-claim-request.ts'
 import { getAttestorAddress, signAsAttestor } from '#src/server/utils/generics.ts'
 import type { RPCHandler } from '#src/types/index.ts'
 import {
@@ -33,18 +33,23 @@ export const claimTunnel: RPCHandler<'claimTunnel'> = async(
 	// ADR 0035 asserts both "any node can re-derive" and "the attestor is the
 	// gate"; until this, those were not simultaneously satisfiable.
 	//
-	// Why it is not a weakening. The three checks below compare the claim
-	// against *this attestor's own recording* of the session. ADR 0036
-	// establishes that an observer Tokenswim operates proves nothing to anyone,
-	// and the attestor is one — so agreement with it is not evidence, it is
-	// self-agreement. What binds a claim is `assertValidClaimRequest`, which
-	// recomputes both ciphertext digests from the transcript the claim carries
-	// and refuses a claim naming any other (ADR 0040). Those digests are what
-	// the Witnesses — parties that are not the prover and not us — signed, and
-	// they are the seed the challenge windows are drawn from. That binding is
-	// strictly stronger than "the bytes our own attestor recorded", and it runs
-	// on both paths. A tunnelled claim keeps the comparison as a cheap
-	// consistency check on a path where it is free; it is not the binding.
+	// Why it is not a weakening. The checks below compare the claim against
+	// *this attestor's own recording* of the session. ADR 0036 establishes that
+	// an observer Tokenswim operates proves nothing to anyone, and the attestor
+	// is one — so agreement with it is not evidence, it is self-agreement. What
+	// binds a claim is `assertValidClaimRequest`, which recomputes both
+	// ciphertext digests from the transcript the claim carries and refuses a
+	// claim naming any other (ADR 0040). Those digests are what the Witnesses —
+	// parties that are not the prover and not us — signed, and they are the seed
+	// the challenge windows are drawn from. That binding is strictly stronger
+	// than "the bytes our own attestor recorded", and it runs on both paths.
+	//
+	// The byte-for-byte transcript comparison that used to sit here is gone with
+	// the recording behind it. It was never free: keeping every message for the
+	// life of the session cost a second full copy of the transcript per live
+	// tunnel, which at the 160 MiB response ceiling is what capped concurrency.
+	// A check that is not binding does not get to set the concurrency limit.
+	// `createRequest` is still compared — it is four scalars, not a transcript.
 	//
 	// What a deferred claim gives up, named rather than glossed: `port`,
 	// `geoLocation` and `proxySessionId` are compared against nothing else, and
@@ -70,20 +75,13 @@ export const claimTunnel: RPCHandler<'claimTunnel'> = async(
 			logger.debug({ err }, 'error closing tunnel')
 		}
 
-		if(tx) {
-			const transcriptBytes = tunnel.transcript.reduce(
-				(acc, { message }) => acc + message.length,
-				0
-			)
-			tx?.setLabel('transcriptBytes', transcriptBytes.toString())
-		}
+		tx?.setLabel('transcriptBytes', tunnel.transcriptBytes().toString())
 
 		// we throw an error for cases where the attestor cannot prove
 		// the user's request is faulty. For eg. if the user sends a
 		// "createRequest" that does not match the tunnel's actual
 		// create request -- the attestor cannot prove that the user
 		// is lying. In such cases, we throw a bad request error.
-		// Same goes for matching the transcript.
 		if(
 			tunnel.createRequest?.host !== request?.host
 			|| tunnel.createRequest?.port !== request?.port
@@ -92,8 +90,6 @@ export const claimTunnel: RPCHandler<'claimTunnel'> = async(
 		) {
 			throw AttestorError.badRequest('Tunnel request does not match')
 		}
-
-		assertTranscriptsMatch(claimRequest.transcript, tunnel.transcript)
 	} else {
 		logger.info(
 			{ tunnelId: request?.id },

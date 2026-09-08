@@ -1,4 +1,4 @@
-import { areUint8ArraysEqual, AUTH_TAG_BYTE_LENGTH, concatenateUint8Arrays, SUPPORTED_CIPHER_SUITE_MAP } from '@reclaimprotocol/tls'
+import { AUTH_TAG_BYTE_LENGTH, concatenateUint8Arrays, SUPPORTED_CIPHER_SUITE_MAP } from '@reclaimprotocol/tls'
 import type { ZKEngine } from '@reclaimprotocol/zk-symmetric-crypto'
 
 import type {
@@ -21,7 +21,6 @@ import type {
 	OPRFRawReplacement,
 	ProviderCtx,
 	ProviderName,
-	TCPSocketProperties,
 	Transcript,
 } from '#src/types/index.ts'
 import {
@@ -187,56 +186,6 @@ export async function assertValidProviderTranscript<T extends ProviderClaimInfo>
 	info.context = canonicalStringify(ctx) ?? ''
 
 	return info
-}
-
-/**
- * Verify that the transcript provided by the client
- * matches the transcript of the tunnel, the server
- * has created.
- */
-export function assertTranscriptsMatch(
-	clientTranscript: ClaimTunnelRequest['transcript'],
-	tunnelTranscript: TCPSocketProperties['transcript']
-) {
-	const clientSends = concatenateUint8Arrays(
-		clientTranscript
-			.filter(m => m.sender === TranscriptMessageSenderType.TRANSCRIPT_MESSAGE_SENDER_TYPE_CLIENT)
-			.map(m => m.message)
-	)
-
-	const tunnelSends = concatenateUint8Arrays(
-		tunnelTranscript
-			.filter(m => m.sender === 'client')
-			.map(m => m.message)
-	)
-
-	if(!areUint8ArraysEqual(clientSends, tunnelSends)) {
-		throw AttestorError.badRequest(
-			'Outgoing messages from client do not match the tunnel transcript'
-		)
-	}
-
-	const clientRecvs = concatenateUint8Arrays(
-		clientTranscript
-			.filter(m => m.sender === TranscriptMessageSenderType.TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER)
-			.map(m => m.message)
-	)
-
-	const tunnelRecvs = concatenateUint8Arrays(
-		tunnelTranscript
-			.filter(m => m.sender === 'server')
-			.map(m => m.message)
-	)
-		// We only need to compare the first N messages
-		// that the client claims to have received
-		// the rest are not relevant -- so even if they're
-		// not present in the tunnel transcript, it's fine
-		.slice(0, clientRecvs.length)
-	if(!areUint8ArraysEqual(clientRecvs, tunnelRecvs)) {
-		throw AttestorError.badRequest(
-			'Incoming messages from server do not match the tunnel transcript'
-		)
-	}
 }
 
 export async function decryptTranscript(

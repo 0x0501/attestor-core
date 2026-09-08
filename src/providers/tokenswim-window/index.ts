@@ -1,6 +1,7 @@
 import { concatenateUint8Arrays } from '@reclaimprotocol/tls'
 import { REDACTION_CHAR_CODE } from '@reclaimprotocol/zk-symmetric-crypto'
 import { bls12_381 } from '@noble/curves/bls12-381.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { areUint8ArraysEqual } from '@reclaimprotocol/tls'
 import { TranscriptMessageSenderType } from '#src/proto/api.ts'
 import { getBytes } from 'ethers'
@@ -422,6 +423,20 @@ const isFrom = (m: { sender: unknown }, side: 'client' | 'server') => (
 		: TranscriptMessageSenderType.TRANSCRIPT_MESSAGE_SENDER_TYPE_SERVER)
 )
 
+/**
+ * Fed record by record rather than over one joined buffer. `crypto.subtle` has
+ * no streaming API, so binding the digest used to mean allocating a copy of the
+ * whole direction — at the 160 MiB response ceiling, the single largest live
+ * allocation on the claim path, for a value that is a fold over the same bytes
+ * either way. SHA-256 is defined on the byte stream, not on how it is handed
+ * over, so the digest is identical to the byte; `tokenswim-digest-streaming.test.ts`
+ * holds both implementations side by side and asserts exactly that.
+ *
+ * `@noble/hashes` rather than `node:crypto`: this file is bundled into
+ * `attestor-browser.min.mjs` by way of `providers/index.ts`, and esbuild builds
+ * it with `platform: 'browser'`, where a `node:crypto` import does not resolve.
+ * Noble is already here — `@noble/curves` below is built on it.
+ */
 export async function assertDigestsBindTheTranscript(
 	transcript: { sender: unknown; message: Uint8Array }[],
 	clientDigest: Uint8Array,
@@ -431,22 +446,24 @@ export async function assertDigestsBindTheTranscript(
 		['client', clientDigest],
 		['server', serverDigest],
 	] as const) {
-		const parts = transcript.filter(m => isFrom(m, side)).map(m => m.message)
-		if(!parts.length) {
+		const hash = sha256.create()
+		let seen = 0
+		for(const message of transcript) {
+			if(!isFrom(message, side)) {
+				continue
+			}
+
+			hash.update(message.message)
+			seen++
+		}
+
+		if(!seen) {
 			throw new Error(
 				`no ${side} messages in the transcript to bind the digest to`
 			)
 		}
-		const total = parts.reduce((n, p) => n + p.length, 0)
-		const joined = new Uint8Array(total)
-		let at = 0
-		for(const p of parts) {
-			joined.set(p, at)
-			at += p.length
-		}
-		const actual = new Uint8Array(
-			await globalThis.crypto.subtle.digest('SHA-256', joined)
-		)
+
+		const actual = hash.digest()
 		if(!areUint8ArraysEqual(actual, named)) {
 			throw new Error(
 				`the claim names a ${side} digest the Witnesses signed, but not one of`
@@ -653,6 +670,35 @@ export async function deriveWindows(
 }
 
 /**
+ * Sorted and fused, which is what `mergeRanges` already does, plus one thing
+ * the bitmap did implicitly and a range list does not.
+ *
+ * `Uint8Array.prototype.fill` reads a negative index as an offset from the
+ * *end*, so `fill(1, -2, 16)` on a 16-byte buffer painted bytes 14 and 15
+ * rather than nothing. A range list has no such convention, and there is no
+ * reading of a negative offset that is both faithful and safe: clipping it up
+ * to 0 *widens* the range, and a wider `covered` set is a challenged byte
+ * treated as proven when it is not. So a range with a negative endpoint is
+ * dropped. Dropping is fail-closed for both sets — a narrower `covered` can
+ * only refuse more, and a narrower `challenged` can only refuse more.
+ *
+ * Every input the callers can actually produce is non-negative and unaffected:
+ * `clientProven` / `serverProven` have been through `readRanges`, which refuses
+ * a negative, and `deriveWindows` returns offsets it computed. `modelChunk` is
+ * the one value that reaches here straight off the claim with only a bare
+ * `{ type: 'number' }` schema behind it — and it is prover-chosen either way,
+ * so what it can name was never the thing being defended.
+ *
+ * A too-large `toIndex` needs no handling: the walk stops at `data.length`, so
+ * a range past the end is visited exactly as `fill` clamped it.
+ */
+function coverage(ranges: Window[]) {
+	return mergeRanges(
+		ranges.filter(r => r.fromIndex >= 0 && r.toIndex >= 0)
+	)
+}
+
+/**
  * Congruence for one direction: revealed exactly where challenged, redacted
  * everywhere else. Windows drawn at random offsets can overlap, so this is
  * checked byte by byte rather than run by run. A one-sided check would let a
@@ -660,22 +706,30 @@ export async function deriveWindows(
  *
  * `proven` is where the claim says its ZK proofs land, checked against the
  * proofs themselves before the transcript was decrypted.
+ *
+ * Both sets used to be materialised as a `Uint8Array(data.length)` bitmap --
+ * two more full-length copies of a transcript that can run to the 160 MiB
+ * response ceiling, to answer a question that is about a handful of intervals.
+ * They are sorted merged ranges now, and because `i` only ever moves forward, a
+ * cursor per set answers the same question in constant space. The byte loop
+ * itself has to stay: `looksRedacted` is a property of every individual byte.
+ * `tokenswim-congruence-ranges.test.ts` keeps the bitmap version as an oracle.
  */
-function assertCongruent(
+export function assertCongruent(
 	direction: string,
 	data: Uint8Array,
 	windows: Window[],
 	proven: Window[]
 ) {
-	const challenged = new Uint8Array(data.length)
-	for(const w of windows) {
-		challenged.fill(1, w.fromIndex, w.toIndex)
-	}
+	const challenged = coverage(windows)
+	const covered = coverage(proven)
 
-	const covered = new Uint8Array(data.length)
-	for(const p of proven) {
-		covered.fill(1, p.fromIndex, p.toIndex)
-	}
+	// Cursors, not searches: both lists are sorted and disjoint and `i` is
+	// monotonic, so each list is walked once across the whole loop. A range is
+	// live for `i` when it has started and not yet ended; ranges that ended
+	// before `i` are dropped and never looked at again.
+	let ci = 0
+	let vi = 0
 
 	// Redaction is signalled by a sentinel byte that is also a legal payload
 	// byte ('*'), so a revealed '*' and a redacted byte are indistinguishable
@@ -691,9 +745,20 @@ function assertCongruent(
 	// representation, on either side — see ADR 0035.
 	let ambiguous = 0
 	for(let i = 0; i < data.length; i++) {
+		while(ci < challenged.length && challenged[ci].toIndex <= i) {
+			ci++
+		}
+
+		while(vi < covered.length && covered[vi].toIndex <= i) {
+			vi++
+		}
+
+		const isChallenged = ci < challenged.length && challenged[ci].fromIndex <= i
+		const isCovered = vi < covered.length && covered[vi].fromIndex <= i
+
 		const looksRedacted = data[i] === REDACTION_CHAR_CODE
-		if(challenged[i] && looksRedacted) {
-			if(!covered[i]) {
+		if(isChallenged && looksRedacted) {
+			if(!isCovered) {
 				throw new Error(
 					`${direction} byte ${i} was challenged and the claim proves nothing`
 					+ ' over it'
@@ -704,7 +769,7 @@ function assertCongruent(
 			continue
 		}
 
-		if(!challenged[i] && !looksRedacted) {
+		if(!isChallenged && !looksRedacted) {
 			throw new Error(`${direction} byte ${i} was revealed but never challenged`)
 		}
 	}

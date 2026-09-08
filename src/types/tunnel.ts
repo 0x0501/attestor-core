@@ -20,6 +20,11 @@ export type Transcript<T> = {
 }[]
 
 export type TCPSocketProperties = {
-	transcript: Transcript<Uint8Array>
+	/**
+	 * How many bytes have crossed the tunnel, both directions. A count rather
+	 * than the messages: the server-side recording bound nothing (ADR 0036,
+	 * ADR 0040) and cost a whole transcript per live session.
+	 */
+	transcriptBytes(): number
 	createRequest: Pick<CreateTunnelRequest, 'host' | 'port' | 'geoLocation' | 'proxySessionId'>
 }
