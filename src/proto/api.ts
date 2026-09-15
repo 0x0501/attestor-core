@@ -450,26 +450,6 @@ export interface CreateTunnelRequest {
   host: string;
   port: number;
   /**
-   * Geo location from which the request will be made.
-   * Provide 2 letter ISO country code. Leave empty
-   * if you don't want to use geo location.
-   *
-   * Geo location is implemented using an https proxy
-   * eg. US, IN, GB, etc.
-   */
-  geoLocation: string;
-  /**
-   * Session identifier for proxy IP persistence.
-   *
-   * When provided, ensures all requests within the same session
-   * are routed through the same proxy IP address. Useful for
-   * maintaining IP consistency across multiple requests.
-   *
-   * Can be a smallcase alphanumeric string of length 8-14 characters.
-   * eg. "mystring12345", "something1234".
-   */
-  proxySessionId: string;
-  /**
    * Tokenswim: the Witness route this session is relayed over, in the
    * order the hops are crossed, each one a "host:port".
    *
@@ -1480,7 +1460,7 @@ export const ErrorData: MessageFns<ErrorData> = {
 };
 
 function createBaseCreateTunnelRequest(): CreateTunnelRequest {
-  return { id: 0, host: "", port: 0, geoLocation: "", proxySessionId: "", route: [], routeSlotId: "" };
+  return { id: 0, host: "", port: 0, route: [], routeSlotId: "" };
 }
 
 export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
@@ -1493,12 +1473,6 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
     }
     if (message.port !== 0) {
       writer.uint32(24).uint32(message.port);
-    }
-    if (message.geoLocation !== "") {
-      writer.uint32(34).string(message.geoLocation);
-    }
-    if (message.proxySessionId !== "") {
-      writer.uint32(42).string(message.proxySessionId);
     }
     for (const v of message.route) {
       writer.uint32(50).string(v!);
@@ -1540,22 +1514,6 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
           message.port = reader.uint32();
           continue;
         }
-        case 4: {
-          if (tag !== 34) {
-            break;
-          }
-
-          message.geoLocation = reader.string();
-          continue;
-        }
-        case 5: {
-          if (tag !== 42) {
-            break;
-          }
-
-          message.proxySessionId = reader.string();
-          continue;
-        }
         case 6: {
           if (tag !== 50) {
             break;
@@ -1586,8 +1544,6 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
       id: isSet(object.id) ? globalThis.Number(object.id) : 0,
       host: isSet(object.host) ? globalThis.String(object.host) : "",
       port: isSet(object.port) ? globalThis.Number(object.port) : 0,
-      geoLocation: isSet(object.geoLocation) ? globalThis.String(object.geoLocation) : "",
-      proxySessionId: isSet(object.proxySessionId) ? globalThis.String(object.proxySessionId) : "",
       route: globalThis.Array.isArray(object?.route) ? object.route.map((e: any) => globalThis.String(e)) : [],
       routeSlotId: isSet(object.routeSlotId) ? globalThis.String(object.routeSlotId) : "",
     };
@@ -1603,12 +1559,6 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
     }
     if (message.port !== 0) {
       obj.port = Math.round(message.port);
-    }
-    if (message.geoLocation !== "") {
-      obj.geoLocation = message.geoLocation;
-    }
-    if (message.proxySessionId !== "") {
-      obj.proxySessionId = message.proxySessionId;
     }
     if (message.route?.length) {
       obj.route = message.route;
@@ -1627,8 +1577,6 @@ export const CreateTunnelRequest: MessageFns<CreateTunnelRequest> = {
     message.id = object.id ?? 0;
     message.host = object.host ?? "";
     message.port = object.port ?? 0;
-    message.geoLocation = object.geoLocation ?? "";
-    message.proxySessionId = object.proxySessionId ?? "";
     message.route = object.route?.map((e) => e) || [];
     message.routeSlotId = object.routeSlotId ?? "";
     return message;

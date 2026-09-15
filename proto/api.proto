@@ -139,27 +139,22 @@ message CreateTunnelRequest {
 	 */
 	uint32 id = 1;
 	string host = 2;
+	/**
+	 * 4 was geoLocation, 5 was proxySessionId. Both named an exit for the
+	 * session to leave by, and both were spent on the same thing: filling in
+	 * the HTTPS_PROXY_URL template the attestor was configured with at boot,
+	 * so the exit was whichever commercial proxy that URL named. A Proof Pool
+	 * session leaves by the last Witness on its route, which the chain chose
+	 * and the slot froze (ADR 0036), so there is no longer an exit for a
+	 * request to ask for.
+	 *
+	 * Reserved rather than reused: a sender built against an older copy of
+	 * this file still puts a country code on the wire as field 4, and a field
+	 * 4 that meant something else now would read it as that something else.
+	 */
+	reserved 4, 5;
+	reserved "geoLocation", "proxySessionId";
 	uint32 port = 3;
-	/**
-	 * Geo location from which the request will be made.
-	 * Provide 2 letter ISO country code. Leave empty
-	 * if you don't want to use geo location.
-	 *
-	 * Geo location is implemented using an https proxy
-	 * eg. US, IN, GB, etc.
-	 */
-	string geoLocation = 4;
-	/**
-	 * Session identifier for proxy IP persistence.
-	 *
-	 * When provided, ensures all requests within the same session
-	 * are routed through the same proxy IP address. Useful for
-	 * maintaining IP consistency across multiple requests.
-	 *
-	 * Can be a smallcase alphanumeric string of length 8-14 characters.
-	 * eg. "mystring12345", "something1234".
-	 */
-	string proxySessionId = 5;
 	/**
 	 * Tokenswim: the Witness route this session is relayed over, in the
 	 * order the hops are crossed, each one a "host:port".

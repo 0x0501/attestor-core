@@ -26,5 +26,5 @@ export type TCPSocketProperties = {
 	 * ADR 0040) and cost a whole transcript per live session.
 	 */
 	transcriptBytes(): number
-	createRequest: Pick<CreateTunnelRequest, 'host' | 'port' | 'geoLocation' | 'proxySessionId'>
+	createRequest: Pick<CreateTunnelRequest, 'host' | 'port'>
 }

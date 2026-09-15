@@ -36,8 +36,16 @@ export const makeRpcTcpTunnel: MakeTunnelFn<TCPTunnelCreateOpts> = ({
 				return
 			}
 
-			onErrorRecv(err)
-			await client.rpc('disconnectTunnel', { id: tunnelId })
+			// The RPC first, the teardown after. `onErrorRecv` removes the
+			// 'tunnel-message' listener, and the server spends the whole of
+			// disconnectTunnel handing over the bytes it had already received
+			// -- the ones every Witness on the route has signed for. Tearing
+			// the listener down first dispatched all of them into nothing.
+			try {
+				await client.rpc('disconnectTunnel', { id: tunnelId })
+			} finally {
+				onErrorRecv(err)
+			}
 		}
 	}
 

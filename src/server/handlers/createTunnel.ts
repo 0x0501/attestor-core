@@ -27,8 +27,6 @@ export const createTunnel: RPCHandler<'createTunnel'> = async(
 		?.startTransaction('tunnelConnection', { childOf: tx })
 	sessionTx?.setLabel('tunnelId', id.toString())
 	sessionTx?.setLabel('hostPort', `${opts.host}:${opts.port}`)
-	sessionTx?.setLabel('geoLocation', opts.geoLocation)
-	sessionTx?.setLabel('proxySessionId', opts.proxySessionId)
 
 	try {
 		const tunnel = await makeTcpTunnel({
@@ -40,8 +38,18 @@ export const createTunnel: RPCHandler<'createTunnel'> = async(
 					return
 				}
 
-				return client
+				// Settled here rather than returned. `onMessage` is declared
+				// `void` and the socket's 'data' handler calls it without
+				// awaiting, so a rejection -- the WS closing between the check
+				// above and the send, which the flush window at the end of a
+				// session makes likelier -- had nothing to catch it and took
+				// the process, and every other live session, down with it.
+				client
 					.sendMessage({ tunnelMessage: { tunnelId: id, message } })
+					.catch(err => logger.warn(
+						{ err, tunnelId: id, bytes: message.length },
+						'failed to forward tunnel message to the client'
+					))
 			},
 			onClose(err) {
 				cancelBgp?.()

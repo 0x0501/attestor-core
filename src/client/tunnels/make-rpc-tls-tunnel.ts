@@ -79,8 +79,13 @@ export const makeRpcTlsTunnel: MakeTunnelFn<ExtraTLSOptions, TLSTunnelProperties
 						createTunnelRequest: {
 							host: request.host || '',
 							port: request.port || DEFAULT_HTTPS_PORT,
-							geoLocation: request.geoLocation || '',
-							proxySessionId: request.proxySessionId || '',
+							// Named rather than left off: the proto has no
+							// optional fields here, and this client dials no
+							// Witness route -- it is the JS SDK path, not a
+							// Proof Pool session -- so it says so explicitly
+							// and the attestor dials the upstream itself.
+							route: [],
+							routeSlotId: '',
 							id: tunnelId
 						},
 					},

@@ -34,8 +34,6 @@ describeWithServer('RPC Tunnel', opts => {
 				id: 1,
 				host: 'localhost',
 				port: opts.mockhttpsServerPort,
-				geoLocation: '',
-				proxySessionId: '',
 			}
 		)
 
@@ -46,11 +44,17 @@ describeWithServer('RPC Tunnel', opts => {
 		await tunnel.close()
 
 		// check that the server actually closed the tunnel
-		// upon our request
+		// upon our request.
+		//
+		// EPIPE, not ERR_STREAM_DESTROYED: an ordinary close half-closes the
+		// socket before dropping it, so a write that follows one is a write
+		// after FIN, which is what net.Socket spells EPIPE. Destroying without
+		// ending first -- what close() does when it is handed an error -- is
+		// still ERR_STREAM_DESTROYED.
 		await assert.rejects(
 			async() => socketTunnel?.write(Buffer.from('hello')),
 			(err: AttestorError) => {
-				assert.strictEqual(err.code, 'ERR_STREAM_DESTROYED')
+				assert.strictEqual(err.code, 'EPIPE')
 				return true
 			}
 		)
@@ -178,63 +182,11 @@ describeWithServer('RPC Tunnel', opts => {
 			)
 		})
 
-		it('should handle tunnel creation errors', async() => {
-			await assert.rejects(
-				async() => makeRpcTlsTunnel({
-					request: {
-						id: 1,
-						host: 'localhost',
-						port: opts.mockhttpsServerPort,
-						// invalid geo location
-						geoLocation: 'XZ',
-						// invalid proxy session id
-						proxySessionId: 'XZ',
-					},
-					tlsOpts: {
-						applicationLayerProtocols: [
-							'invalid-protocol'
-						]
-					},
-					logger: client.logger,
-					connect(initMessages) {
-						client.sendMessage(...initMessages)
-							.catch(() => {})
-						return client
-					},
-				}),
-				(err: AttestorError) => {
-					assert.match(err.message, /Geolocation "XZ" is invalid/)
-					return true
-				}
-			)
-
-			await assert.rejects(
-				async() => makeRpcTlsTunnel({
-					request: {
-						id: 1,
-						host: 'localhost',
-						port: opts.mockhttpsServerPort,
-						geoLocation: 'IN',
-						// invalid proxy session id
-						proxySessionId: 'XZ',
-					},
-					tlsOpts: {
-						applicationLayerProtocols: [
-							'invalid-protocol'
-						]
-					},
-					logger: client.logger,
-					connect(initMessages) {
-						client.sendMessage(...initMessages)
-							.catch(() => {})
-						return client
-					},
-				}),
-				(err: AttestorError) => {
-					assert.match(err.message, /proxySessionId "XZ" is invalid/)
-					return true
-				}
-			)
-		})
+		// The two halves of the tunnel-creation error test asserted on the
+		// geoLocation and proxySessionId validators, which existed to keep a
+		// malformed value out of the HTTPS_PROXY_URL template. Neither the
+		// template nor the values select an exit any more -- the route does --
+		// and a route that does not check out is refused by planTokenswimRoute,
+		// which tokenswim-route.test.ts covers hop by hop.
 	})
 })

@@ -24,8 +24,6 @@ describe('HTTP Provider Utils tests', () => {
 
 	const {
 		hostPort,
-		geoLocation,
-		proxySessionId,
 		getResponseRedactions,
 		createRequest,
 		assertValidProviderReceipt
@@ -787,15 +785,12 @@ describe('HTTP Provider Utils tests', () => {
 			],
 			method: 'GET',
 			responseRedactions: [{ xPath: './html/head/title' }],
-			geoLocation: 'US',
 		}
 		const hash = hashProviderParams(params)
 		assert.equal(hash, '0x58e516c01cf2bb54fd567a4f31b64d0a8e99ee2569c814d31030bf2febadf270')
 
 
 		const paramsEx: ProviderParams<'http'> = {
-			'geoLocation': '',
-			'proxySessionId': '',
 			'url': 'https://www.linkedin.com/dashboard/',
 			'method': 'GET',
 			'body': '',
@@ -1255,73 +1250,10 @@ Content-Type: text/html; charset=utf-8\r
 		}, /Invalid receipt. Response does not contain \"abc\"/)
 	})
 
-	it('should get proxy sessionId', () => {
-		const psessionId = getProviderValue(
-			{
-				proxySessionId: '{{psessionId}}',
-				paramValues: {
-					'psessionId': 'abcd12345'
-				}
-			} as unknown as ProviderParams<'http'>,
-			proxySessionId
-		)
-		assert.equal(psessionId, 'abcd12345')
-	})
-
-	it('should throw on bad proxy session id param', () => {
-
-		assert.throws(() => {
-			// @ts-ignore
-			proxySessionId({
-				proxySessionId: '{{psessionId}}',
-				paramValues: {
-					'psessionId1': 'abcd12345'
-				}
-			})
-		}, /parameter "psessionId" value not found in templateParams/)
-	})
-
-	it('should return empty proxy session id', () => {
-		assert.equal(
-			// @ts-ignore
-			proxySessionId({ proxySessionId: '' }),
-			undefined
-		)
-	})
-
-	it('should get geo', () => {
-		const geo = getProviderValue(
-			{
-				geoLocation: '{{geo}}',
-				paramValues: {
-					'geo': 'US'
-				}
-			} as unknown as ProviderParams<'http'>,
-			geoLocation
-		)
-		assert.equal(geo, 'US')
-	})
-
-	it('should throw on bad geo param', () => {
-
-		assert.throws(() => {
-			// @ts-ignore
-			geoLocation({
-				geoLocation: '{{geo}}',
-				paramValues: {
-					'geo1': 'US'
-				}
-			})
-		}, /parameter "geo" value not found in templateParams/)
-	})
-
-	it('should return empty geo', () => {
-		assert.equal(
-			// @ts-ignore
-			geoLocation({ geoLocation: '' }),
-			undefined
-		)
-	})
+	// The geoLocation and proxySessionId resolver tests stood here. Both
+	// fields are gone from the provider and from the wire: they selected an
+	// exit out of the attestor's boot-time proxy, and a route frozen on chain
+	// selects it now.
 
 	it('should throw on bad param in url', () => {
 
@@ -1404,8 +1336,6 @@ Content-Type: text/html; charset=utf-8\r
 			url: 'https://example.{{param1}}/',
 			method: 'GET',
 			body: 'hello {{h}} {{b}} {{h1h1h1h1h1h1h1}} {{h2}} {{a}} {{h1h1h1h1h1h1h1}} {{h}} {{a}} {{h2}} {{a}} {{b}} world',
-			geoLocation: 'US',
-			proxySessionId: 'abcd12345',
 			responseMatches: [{
 				type: 'regex',
 				value: '<title.*?(?<domain>{{param2}} Domain)<\\/title>',
@@ -1457,8 +1387,6 @@ Content-Type: text/html; charset=utf-8\r
 	it('should replace params in body correctly case 2', () => {
 		const params: ProviderParams<'http'> = {
 			'body': '{"includeGroups":{{REQ_DAT}},"includeLogins":{{REQ_SECRET}},"includeVerificationStatus":false}',
-			'geoLocation': '',
-			'proxySessionId': '',
 			'method': 'POST',
 			'paramValues': {
 				'REQ_DAT': 'false',
@@ -1579,8 +1507,6 @@ Content-Type: text/html; charset=utf-8\r
 	it('should replace secret params in URL correctly', () => {
 		const params: ProviderParams<'http'> = {
 			'body': '',
-			'geoLocation': '',
-			'proxySessionId': '',
 			'method': 'POST',
 			'paramValues': {
 				'username': 'testyreclaim'

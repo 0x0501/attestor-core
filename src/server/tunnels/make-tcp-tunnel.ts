@@ -5,8 +5,6 @@ import { Socket } from 'net'
 import { CONNECTION_TIMEOUT_MS } from '#src/config/index.ts'
 import type { CreateTunnelRequest } from '#src/proto/api.ts'
 import { getPublicAddresses } from '#src/server/utils/generics.ts'
-import { isValidCountryCode } from '#src/server/utils/iso.ts'
-import { isValidProxySessionId } from '#src/server/utils/proxy-session.ts'
 import { admittedWitnesses, startRosterRefresh } from '#src/server/utils/tokenswim-roster.ts'
 import { planTokenswimRoute } from '#src/server/utils/tokenswim-route.ts'
 import type { Logger } from '#src/types/index.ts'
@@ -14,11 +12,37 @@ import type { MakeTunnelFn, TCPSocketProperties } from '#src/types/index.ts'
 import { getEnvVariable } from '#src/utils/env.ts'
 import { AttestorError, logger as rootLogger } from '#src/utils/index.ts'
 
-const HTTPS_PROXY_URL = getEnvVariable('HTTPS_PROXY_URL')
-// allow these hosts to be directed w/o any IP resolution checks,
-// useful for testing. Use with caution in production.
-const ALLOWED_DIRECT_HOSTS = getEnvVariable('ALLOWED_DIRECT_HOSTS')
-	?.split(',')
+// FLUSH_TIMEOUT_MS bounds how long an ordinary close waits for bytes the kernel
+// has already accepted to surface as 'data' events.
+//
+// Deliberately not the 30s that apps/relay's drainTimeout and
+// apps/net/internal/witness/route's drainTimeout use. Those two wait on a peer
+// that may still have something to send. This one cannot: close() has exactly
+// one caller that passes no error -- the disconnectTunnel handler -- and the
+// prover sends that only once its own drain has already finished. Nothing is
+// left to wait *for*. The bytes this window exists to save are in the receive
+// buffer already, or one RTT away from it, and Node surfaces them within a few
+// turns of the event loop; half a second is several round trips of margin.
+//
+// The bound is also what the window costs, because every millisecond of it is
+// an fd and a receive buffer held open for a session that is already over. At
+// 30s and the traffic this attestor is sized for that is some hundreds of
+// sockets standing around for half a minute apiece, to catch bytes that landed
+// in the first millisecond.
+const FLUSH_TIMEOUT_MS = 500
+// An unrouted session is dialled from this host, and the resolve-then-filter
+// below is what stops one from reaching loopback, a link-local metadata
+// endpoint, or anything else this machine happens to be able to route to. The
+// test suite has to dial loopback, so under NODE_ENV=test -- and nowhere else
+// -- the host is taken as given.
+//
+// This replaces ALLOWED_DIRECT_HOSTS, which read the same exemption out of the
+// environment as a list of host names. A guard an operator can open by adding a
+// line to a .env file on a production attestor is not a guard, and the reason it
+// existed -- reaching an upstream without this machine's resolver choosing the
+// address -- is now what a route does properly, by handing the name to the
+// Witness that dials it.
+const IS_TEST = getEnvVariable('NODE_ENV') === 'test'
 // Tokenswim: the Witness addresses a request may name as its first hop, read
 // off the chain instead of configured. A Witness's observations listener
 // answers GET /v1/witnesses with the admitted roster, so an operator who
@@ -44,11 +68,7 @@ if(ROSTER_URL) {
 	)
 }
 
-type ExtraOpts =
-	& Omit<CreateTunnelRequest, 'id' | 'initialMessage' | 'route' | 'routeSlotId'>
-	// Tokenswim: optional here though the proto always fills them, so a caller
-	// that predates Witness routing still typechecks.
-	& Partial<Pick<CreateTunnelRequest, 'route' | 'routeSlotId'>>
+type ExtraOpts = Omit<CreateTunnelRequest, 'id' | 'initialMessage'>
 	& { logger: Logger }
 
 interface ConnectResponse {
@@ -88,6 +108,7 @@ export const makeTcpTunnel: MakeTunnelFn<ExtraOpts, TCPSocketProperties> = async
 	const socket = await connectTcp({ ...opts, logger })
 
 	let closed = false
+	let flushing: Promise<void> | undefined
 
 	socket.on('data', message => {
 		if(closed) {
@@ -99,7 +120,13 @@ export const makeTcpTunnel: MakeTunnelFn<ExtraOpts, TCPSocketProperties> = async
 		bytes += message.length
 	})
 
-	// socket.once('error', onSocketClose)
+	// Both, and not just 'close'. connectTcp leaves its own 'error' listener
+	// attached after the connection is up -- the `reject` of a promise that has
+	// already settled -- so a mid-session ECONNRESET had a listener (no crash)
+	// whose only effect was to swallow it. 'close' then reported the session as
+	// having ended cleanly, and the prover was told the upstream hung up
+	// politely when it had in fact been reset.
+	socket.once('error', onSocketClose)
 	socket.once('close', () => onSocketClose(undefined))
 
 	return {
@@ -123,8 +150,59 @@ export const makeTcpTunnel: MakeTunnelFn<ExtraOpts, TCPSocketProperties> = async
 				return
 			}
 
-			socket.destroy(err)
+			// An error is a real abort: whatever the kernel still holds was
+			// not cleanly received, and every caller that passes one -- a
+			// torn-down WS session, a BGP overlap -- has already lost the
+			// client those bytes would be handed to. Drop the fd now.
+			if(err) {
+				socket.destroy(err)
+				return
+			}
+
+			// Memoised: claimTunnel closes the tunnel again after
+			// disconnectTunnel did, and a second flush would arm a second
+			// window rather than join the one already running.
+			flushing ||= flush()
+			return flushing
 		}
+	}
+
+	/**
+	 * Half-closes the socket and resolves once the bytes the kernel had
+	 * already accepted have surfaced as 'data' -- and so reached `onMessage`.
+	 *
+	 * `socket.destroy()` used to run here instead, which discarded them. Every
+	 * Witness accounts for what it *forwarded* (the pipe in
+	 * apps/net/internal/witness/route hashes after the write returns), so bytes
+	 * sitting in this machine's receive buffer are already inside the account
+	 * every seat on the route signed. Dropping them left the prover holding a
+	 * transcript shorter than the one the committee agreed on, which surfaces
+	 * as "all N witnesses signed the same account and it is not the one this
+	 * prover holds": the tail this end threw away, reported as the seats'
+	 * fault.
+	 *
+	 * Returning the promise is the other half of that fix. `disconnectTunnel`
+	 * awaits `close()`, so the flushed bytes go out ahead of the disconnect
+	 * response instead of chasing it down a socket the prover is entitled to
+	 * stop reading once it has been told the tunnel is gone.
+	 */
+	async function flush() {
+		socket.end()
+
+		await new Promise<void>(resolve => {
+			const timer = setTimeout(resolve, FLUSH_TIMEOUT_MS)
+			socket.once('close', () => {
+				clearTimeout(timer)
+				resolve()
+			})
+		})
+
+		// Nothing reads this session once close() has returned, and a peer is
+		// under no obligation to hang up -- an HTTP/2 upstream keeps an idle
+		// connection open for minutes, which is the case that produced the
+		// original bug. Half-closing alone would leave the fd and its receive
+		// buffer to the peer's discretion.
+		socket.destroy()
 	}
 
 	function onSocketClose(err?: Error) {
@@ -195,54 +273,17 @@ async function connectTcp(opts: ExtraOpts) {
 }
 
 async function getSocket(opts: ExtraOpts) {
-	const { logger, geoLocation } = opts
-	if(geoLocation) {
-		try {
-			return await _getSocket(opts)
-		} catch(err) {
-			// see if the proxy is blocking the connection
-			// due to their own arbitrary rules,
-			// if so -- we resolve hostname first &
-			// connect directly via address to
-			// avoid proxy knowing which host we're connecting to
-			if(
-				!(err instanceof AttestorError)
-				|| err.data?.code !== 403
-			) {
-				throw err
-			}
-
-			const addrs = await getPublicAddresses(opts.host)
-			logger.info(
-				{ addrs, host: opts.host },
-				'failed to connect due to restricted IP, trying via raw addr'
-			)
-
-			for(const addr of addrs) {
-				try {
-					return await _getSocket({ ...opts, host: addr })
-				} catch(err) {
-					logger.error(
-						{ addr, err },
-						'failed to connect to host'
-					)
-				}
-			}
-
-			throw err
-		}
-	}
-
+	const { logger } = opts
 	// A routed session is dialled by its last Witness, which is the egress
 	// (ADR 0036). Resolving the name here and handing an address on would put
 	// an IP in the CONNECT the Witness relays, so the Witness's own resolver
 	// overrides never apply and the host the chain records for the session is
 	// an address rather than the name the policy commits to.
-	if(opts.route?.length) {
+	if(opts.route.length) {
 		return _getSocket(opts)
 	}
 
-	const addrs = ALLOWED_DIRECT_HOSTS?.includes(opts.host)
+	const addrs = IS_TEST
 		? [opts.host]
 		: await getPublicAddresses(opts.host)
 	logger.debug(
@@ -270,68 +311,26 @@ async function getSocket(opts: ExtraOpts) {
 }
 
 async function _getSocket(
-	{
-		host,
-		port,
-		geoLocation,
-		proxySessionId,
-		route,
-		routeSlotId,
-		logger
-	}: ExtraOpts,
+	{ host, port, route, routeSlotId, logger }: ExtraOpts,
 ) {
-	const socket = new Socket()
-	// Tokenswim: a route the request names overrides the boot-time proxy
-	// entirely. It has to: the route belongs to the session, and a proxy URL
-	// fixed at boot makes every session on this attestor cross one first hop.
 	// Read per session, not once at module load: the roster is refreshed for the
 	// life of the process, and a hoisted copy would pin this attestor to whoever
 	// was admitted at boot -- the exact staleness reading it off the chain fixes.
 	const routePlan = planTokenswimRoute(route, routeSlotId, admittedWitnesses())
-	if(routePlan && !routePlan.ok) {
-		throw AttestorError.badRequest(routePlan.reason, { route, routeSlotId })
-	}
-
-	if(!routePlan && (proxySessionId || geoLocation) && !HTTPS_PROXY_URL) {
-		logger.warn(
-			{ geoLocation, proxySessionId },
-			'geoLocation or proxySessionId provided but no proxy URL found'
-		)
-		geoLocation = ''
-		proxySessionId = ''
-	}
-
-	if(!routePlan && !geoLocation && !proxySessionId) {
+	const socket = new Socket()
+	if(!routePlan) {
 		socket.connect({ host, port, })
 		return socket
 	}
 
-	// A proxySessionId on its own is a legitimate request — pin the egress IP,
-	// do not pin the country — but the check below rejects the empty
-	// geoLocation that comes with it.
-	if(geoLocation && !isValidCountryCode(geoLocation)) {
-		throw AttestorError.badRequest(
-			`Geolocation "${geoLocation}" is invalid. Must be 2 letter ISO country code`,
-			{ geoLocation }
-		)
+	if(!routePlan.ok) {
+		throw AttestorError.badRequest(routePlan.reason, { route, routeSlotId })
 	}
 
-	if(proxySessionId && !isValidProxySessionId(proxySessionId)) {
-		throw AttestorError.badRequest(
-			`proxySessionId "${proxySessionId}" is invalid. Must be a lowercase alphanumeric string of length 8-14 characters. eg. "mystring12345", "something1234".`,
-			{ proxySessionId }
-		)
-	}
-
-	const agentUrl = routePlan?.agentUrl || HTTPS_PROXY_URL!.replace(
-		'{{geoLocation}}',
-		geoLocation?.toLowerCase() || ''
-	).replace(
-		'{{proxySessionId}}',
-		proxySessionId ? `-session-${proxySessionId}` : ''
+	const agent = new HttpsProxyAgent(
+		routePlan.agentUrl,
+		{ headers: routePlan.headers }
 	)
-
-	const agent = new HttpsProxyAgent(agentUrl, { headers: routePlan?.headers })
 	const waitForProxyRes = new Promise<ConnectResponse>(resolve => {
 		// @ts-ignore
 		socket.once('proxyConnect', resolve)
@@ -356,13 +355,10 @@ async function _getSocket(
 
 	const res = await waitForProxyRes
 	if(res.statusCode !== 200) {
-		logger.error(
-			{ geoLocation, proxySessionId, res },
-			'Proxy geo location or session id failed'
-		)
+		logger.error({ route, res }, 'the first hop refused the CONNECT')
 		throw new AttestorError(
 			'ERROR_PROXY_ERROR',
-			`Proxy via ${geoLocation ? `geo location "${geoLocation}"` : ''}${geoLocation && proxySessionId ? ', or ' : ''}${proxySessionId ? `session id "${proxySessionId}"` : ''} failed with status code: ${res.statusCode}, message: ${res.statusText}`,
+			`the first hop "${route[0]}" refused the CONNECT with status code: ${res.statusCode}, message: ${res.statusText}`,
 			{
 				code: res.statusCode,
 				message: res.statusText,

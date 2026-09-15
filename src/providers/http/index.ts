@@ -14,7 +14,6 @@ import {
 	matchRedactedStrings,
 	parseHttpResponse,
 } from '#src/providers/http/utils.ts'
-import { isValidProxySessionId } from '#src/server/utils/proxy-session.ts'
 import type {
 	ArraySlice,
 	Provider,
@@ -62,16 +61,6 @@ const HTTP_PROVIDER: Provider<'http'> = {
 	writeRedactionMode(params) {
 		return ('writeRedactionMode' in params)
 			? params.writeRedactionMode
-			: undefined
-	},
-	geoLocation(params, secretParams) {
-		return ('geoLocation' in params)
-			? getGeoLocation(params, secretParams)
-			: undefined
-	},
-	proxySessionId(params, secretParams) {
-		return ('proxySessionId' in params)
-			? getProxySessionId(params, secretParams)
 			: undefined
 	},
 	additionalClientOptions(params): TLSConnectionOptions {
@@ -845,18 +834,6 @@ export function substituteParamValues(
 
 	}
 
-	const geoParams = extractAndReplaceTemplateValues(params.geoLocation)
-	if(geoParams) {
-		params.geoLocation = geoParams.newParam
-		extractedValues = { ...extractedValues, ...geoParams.extractedValues }
-	}
-
-	const proxySessionIdParams = extractAndReplaceTemplateValues(params.proxySessionId)
-	if(proxySessionIdParams) {
-		params.proxySessionId = proxySessionIdParams.newParam
-		extractedValues = { ...extractedValues, ...proxySessionIdParams.extractedValues }
-	}
-
 	if(params.responseRedactions) {
 		for(const r of params.responseRedactions) {
 			if(r.regex) {
@@ -938,68 +915,6 @@ export function substituteParamValues(
 	}
 }
 
-function getGeoLocation(v2Params: HTTPProviderParams, secretParams?: ProviderSecretParams<'http'>) {
-	if(v2Params?.geoLocation) {
-		const paramNames: Set<string> = new Set()
-		let geo = v2Params.geoLocation
-		//extract param names
-
-		let match: RegExpExecArray | null = null
-		while(match = paramsRegex.exec(geo)) {
-			paramNames.add(match[1])
-		}
-
-		for(const pn of paramNames) {
-			if(v2Params.paramValues && pn in v2Params.paramValues) {
-				geo = geo?.replaceAll(`{{${pn}}}`, v2Params.paramValues[pn].toString())
-			} else if(secretParams?.paramValues && pn in secretParams.paramValues) {
-				geo = geo?.replaceAll(`{{${pn}}}`, secretParams.paramValues[pn].toString())
-			} else {
-				throw new Error(`parameter "${pn}" value not found in templateParams`)
-			}
-		}
-
-		const geoRegex = /^[A-Za-z]{2}$/sgiu
-		if(!geoRegex.test(geo)) {
-			throw new Error(`Geolocation ${geo} is invalid`)
-		}
-
-		return geo
-	}
-
-	return undefined
-}
-
-function getProxySessionId(v2Params: HTTPProviderParams, secretParams?: ProviderSecretParams<'http'>) {
-	if(v2Params?.proxySessionId) {
-		const paramNames: Set<string> = new Set()
-		let proxySessionIdValue = v2Params.proxySessionId
-		//extract param names
-
-		let match: RegExpExecArray | null = null
-		while(match = paramsRegex.exec(proxySessionIdValue)) {
-			paramNames.add(match[1])
-		}
-
-		for(const pn of paramNames) {
-			if(v2Params.paramValues && pn in v2Params.paramValues) {
-				proxySessionIdValue = proxySessionIdValue?.replaceAll(`{{${pn}}}`, v2Params.paramValues[pn].toString())
-			} else if(secretParams?.paramValues && pn in secretParams.paramValues) {
-				proxySessionIdValue = proxySessionIdValue?.replaceAll(`{{${pn}}}`, secretParams.paramValues[pn].toString())
-			} else {
-				throw new Error(`parameter "${pn}" value not found in templateParams`)
-			}
-		}
-
-		if(!isValidProxySessionId(proxySessionIdValue)) {
-			throw new Error(`proxySessionId ${proxySessionIdValue} is invalid`)
-		}
-
-		return proxySessionIdValue
-	}
-
-	return undefined
-}
 
 function getURL(v2Params: HTTPProviderParams, secretParams: ProviderSecretParams<'http'>) {
 	let hostPort = v2Params?.url

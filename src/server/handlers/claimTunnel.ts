@@ -49,18 +49,21 @@ export const claimTunnel: RPCHandler<'claimTunnel'> = async(
 	// life of the session cost a second full copy of the transcript per live
 	// tunnel, which at the 160 MiB response ceiling is what capped concurrency.
 	// A check that is not binding does not get to set the concurrency limit.
-	// `createRequest` is still compared — it is four scalars, not a transcript.
+	// `createRequest` is still compared — it is two scalars, not a transcript.
 	//
-	// What a deferred claim gives up, named rather than glossed: `port`,
-	// `geoLocation` and `proxySessionId` are compared against nothing else, and
-	// on this path are not checked at all. `host` survives by another route —
-	// `processHandshake` takes the hostname from the ClientHello's SNI inside
-	// the claim's own transcript and validates the certificate chain against it,
-	// and `assertValidClaimRequest` then refuses a claim whose stated host
-	// disagrees. None of the three losses is evidentiary today (the certificate
-	// binds the identity, not the port), but `proxySessionId` is what routes a
-	// session through the Witness chain: if a reader is ever meant to check it,
-	// it needs a binding of its own rather than the tunnel's memory of it.
+	// What a deferred claim gives up, named rather than glossed: `port` is
+	// compared against nothing else, and on this path is not checked at all.
+	// `host` survives by another route — `processHandshake` takes the hostname
+	// from the ClientHello's SNI inside the claim's own transcript and
+	// validates the certificate chain against it, and `assertValidClaimRequest`
+	// then refuses a claim whose stated host disagrees. The one remaining loss
+	// is not evidentiary today, because the certificate binds the identity and
+	// not the port.
+	//
+	// It used to be three. `geoLocation` and `proxySessionId` were the other
+	// two, and the question of whether a reader was ever meant to check them
+	// answered itself: they chose an exit through a boot-time proxy, a route
+	// frozen on chain chooses it now, and the fields are gone from the wire.
 	//
 	// Absence is read off the map rather than by catching the throw. `getTunnel`
 	// is a map lookup and a `throw` — there is no other failure it can report —
@@ -85,8 +88,6 @@ export const claimTunnel: RPCHandler<'claimTunnel'> = async(
 		if(
 			tunnel.createRequest?.host !== request?.host
 			|| tunnel.createRequest?.port !== request?.port
-			|| tunnel.createRequest?.geoLocation !== request?.geoLocation
-			|| tunnel.createRequest?.proxySessionId !== request?.proxySessionId
 		) {
 			throw AttestorError.badRequest('Tunnel request does not match')
 		}
