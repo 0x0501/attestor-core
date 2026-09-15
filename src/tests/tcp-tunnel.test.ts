@@ -45,6 +45,16 @@ const NO_SECOND_POLL_MS = 600_000
  * up, so an unbounded wait would hang here rather than fail.
  */
 const CLOSE_CEILING_MS = 5_000
+/**
+ * A ceiling on the whole test, not just on `close()`. The assertion below
+ * bounds how long `close()` took *once it returned*; it says nothing about a
+ * `close()` that never returns, and the flush this file exists to cover is an
+ * await on a timer -- break the timer and the failure mode is a hang, not a
+ * wrong number. node:test then reports a timeout against this file in seconds
+ * instead of the runner's global one in minutes, where it reads as a slow
+ * machine and gets retried away.
+ */
+const TEST_TIMEOUT_MS = 15_000
 
 type Ready = {
 	type: 'ready'
@@ -103,7 +113,7 @@ describe('TCP tunnel', () => {
 		roster.close()
 	})
 
-	it('hands over every byte the Witness forwarded, including the ones that arrived while the loop was blocked', async() => {
+	it('hands over every byte the Witness forwarded, including the ones that arrived while the loop was blocked', { timeout: TEST_TIMEOUT_MS }, async() => {
 		let received = 0
 		const tunnel = await makeTcpTunnel({
 			host: '127.0.0.1',
@@ -154,7 +164,7 @@ describe('TCP tunnel', () => {
 		)
 	})
 
-	it('reports a torn-down session as an error rather than a clean close', async() => {
+	it('reports a torn-down session as an error rather than a clean close', { timeout: TEST_TIMEOUT_MS }, async() => {
 		// The 'error' listener used to be commented out, leaving connectTcp's
 		// settled `reject` as the only one: an error had a listener, so nothing
 		// crashed and nothing was reported either, and the session was handed

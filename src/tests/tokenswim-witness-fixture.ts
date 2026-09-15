@@ -84,6 +84,18 @@ process.on('message', message => {
 	}
 })
 
+/**
+ * Follow the parent down. Two listening servers and an open IPC channel mean
+ * this event loop never drains by itself, and `fork` leaves stdout/stderr
+ * inherited -- so an orphan holds the pipes the test runner is reading and the
+ * run sits there until the global timeout with nothing reported. That is what
+ * turned any failure between the `fork` and the `after()` hook that kills it --
+ * an import that no longer resolves, a throw in setup -- into a silent hang
+ * instead of a message. The regression this fixture exists for fails in 300ms;
+ * losing that to an unrelated orphan is what makes a test worthless.
+ */
+process.on('disconnect', () => process.exit(0))
+
 process.send!({
 	type: 'ready',
 	upstreamPort,

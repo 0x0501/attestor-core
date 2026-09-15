@@ -2,8 +2,14 @@ import type { TLSConnectionOptions } from '@reclaimprotocol/tls'
 
 import type { AttestorVersion, ProviderClaimData } from '#src/proto/api.ts'
 import type { ArraySlice, Logger, RedactedOrHashedArraySlice } from '#src/types/general.ts'
-import type { ProvidersConfig } from '#src/types/providers.gen.ts'
+import type { ProvidersConfig as GeneratedProvidersConfig } from '#src/types/providers.gen.ts'
+import { PROVIDER_SCHEMAS as GENERATED_SCHEMAS } from '#src/types/providers.gen.ts'
 import type { Awaitable } from '#src/types/signatures.ts'
+import type { TokenswimWindowParameters } from '#src/types/tokenswim-window.ts'
+import {
+	TokenswimWindowParametersJson,
+	TokenswimWindowSecretParametersJson
+} from '#src/types/tokenswim-window.ts'
 import type { Transcript } from '#src/types/tunnel.ts'
 
 export type AttestorData = {
@@ -21,6 +27,27 @@ type CreateRequestResult = {
    */
   data: Uint8Array | string
   redactions: ArraySlice[]
+}
+
+/**
+ * Every provider, generated and not. `providers.gen.ts` holds only what
+ * `provider-schemas/*` produces; anything hand-written joins here, so running
+ * the generator can no longer delete a provider by rewriting one file.
+ */
+export type ProvidersConfig = GeneratedProvidersConfig & {
+	tokenswimWindow: {
+		parameters: TokenswimWindowParameters
+		secretParameters: Record<string, never>
+	}
+}
+
+/** The same join, for the AJV schemas `validation.ts` checks parameters against. */
+export const PROVIDER_SCHEMAS = {
+	...GENERATED_SCHEMAS,
+	tokenswimWindow: {
+		parameters: TokenswimWindowParametersJson,
+		secretParameters: TokenswimWindowSecretParametersJson
+	}
 }
 
 export type ProviderName = keyof ProvidersConfig

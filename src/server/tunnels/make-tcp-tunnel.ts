@@ -43,6 +43,16 @@ const FLUSH_TIMEOUT_MS = 500
 // address -- is now what a route does properly, by handing the name to the
 // Witness that dials it.
 const IS_TEST = getEnvVariable('NODE_ENV') === 'test'
+/**
+ * ...and only to reach this machine. The suite dials its own fixtures on
+ * loopback, so loopback is the whole of what the exemption owes it. Spending
+ * it on every host instead would mean one stray NODE_ENV=test in a shipped
+ * attestor's environment -- a CI image, a copied unit file -- turning an
+ * attacker-chosen `host` into a reachable link-local metadata endpoint or an
+ * address inside the private range, which is the SSRF getPublicAddresses is
+ * there to refuse. Narrowed, the worst that stray buys is this host.
+ */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
 // Tokenswim: the Witness addresses a request may name as its first hop, read
 // off the chain instead of configured. A Witness's observations listener
 // answers GET /v1/witnesses with the admitted roster, so an operator who
@@ -283,7 +293,7 @@ async function getSocket(opts: ExtraOpts) {
 		return _getSocket(opts)
 	}
 
-	const addrs = IS_TEST
+	const addrs = IS_TEST && LOOPBACK_HOSTS.has(opts.host.toLowerCase())
 		? [opts.host]
 		: await getPublicAddresses(opts.host)
 	logger.debug(
