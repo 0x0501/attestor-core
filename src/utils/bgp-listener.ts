@@ -35,7 +35,14 @@ export function createBgpListener(logger: Logger): BGPListener {
 	let closed = false
 	let reconnect: ReturnType<typeof setTimeout> | undefined
 
-	const targetIps = new Set<string>()
+	// address -> how many live sessions are watching it.
+	//
+	// A Set was wrong once concurrency arrived: every session to one provider
+	// targets the same addresses, so the first session to finish deleted the
+	// address the others were still relying on and their hijack check went
+	// quiet without saying so. The count is what makes a finished session stop
+	// watching only what nobody else is still watching.
+	const targetIps = new Map<string, number>()
 	const eventTarget = new EventTarget()
 
 	openWs()
@@ -43,7 +50,11 @@ export function createBgpListener(logger: Logger): BGPListener {
 	return {
 		onOverlap(ips, callback) {
 			for(const ip of ips) {
-				targetIps.add(ip)
+				const held = targetIps.get(ip) ?? 0
+				targetIps.set(ip, held + 1)
+				if(!held) {
+					send('ris_subscribe', watchFor(ip))
+				}
 			}
 
 			eventTarget.addEventListener(
@@ -53,7 +64,14 @@ export function createBgpListener(logger: Logger): BGPListener {
 
 			return () => {
 				for(const ip of ips) {
+					const held = targetIps.get(ip) ?? 0
+					if(held > 1) {
+						targetIps.set(ip, held - 1)
+						continue
+					}
+
 					targetIps.delete(ip)
+					send('ris_unsubscribe', watchFor(ip))
 				}
 
 				eventTarget.removeEventListener(
@@ -98,27 +116,58 @@ export function createBgpListener(logger: Logger): BGPListener {
 		}
 	}
 
-	function onOpen(socket: ReturnType<typeof makeWebSocket>): void {
-		const subscriptionMessage = {
-			type: 'ris_subscribe',
-			data: {
-				type: 'UPDATE',
-			},
-		}
+	/**
+	 * What to ask ris-live for on behalf of one watched address.
+	 *
+	 * The check this feeds is overlapsTargetIps, which asks whether an
+	 * announced prefix CONTAINS the address. From that address's own /32 those
+	 * are the less specific announcements, so that is what is subscribed to --
+	 * and ris-live applies it, rather than this process reading every
+	 * announcement on the internet to throw almost all of them away.
+	 *
+	 * It used to subscribe to `{ type: 'UPDATE' }` and nothing else, which is
+	 * the unfiltered global feed. Measured on the deployed attestor: 5.1 GB
+	 * received in one hour, a socket receive queue that never drained, and 70-90%
+	 * of a core spent in JSON.parse on the same thread that serves every TLS
+	 * tunnel and every claimTunnel. That is what forced the relay to cap itself
+	 * at sixteen concurrent witnessed sessions, and past that cap requests were
+	 * served unwitnessed.
+	 *
+	 * Verified against the live service before it was relied on: a /32 with
+	 * lessSpecific returns the containing prefix, a malformed prefix comes back
+	 * as `ris_error` rather than as silence, and messages that match on one
+	 * prefix may carry others -- which overlapsTargetIps still filters, so the
+	 * detection is the same one it always was.
+	 */
+	function watchFor(ip: string) {
+		return { type: 'UPDATE', prefix: `${ip}/32`, lessSpecific: true }
+	}
 
-		// send() on a socket that is not OPEN throws, and this is an event
-		// handler: the throw does not return to anyone here, it goes to the
-		// event target, which rethrows it on nextTick, which ends the process.
-		// This is hijack detection. It is not worth a single proof, let alone
-		// every proof in flight.
+	function send(type: string, data: unknown, socket = ws): void {
+		// send() on a socket that is not OPEN throws, and the callers of this
+		// are event handlers: the throw does not come back to anything here, it
+		// goes to the event target, which rethrows it on nextTick, which ends
+		// the process. This is hijack detection. It is not worth a single
+		// proof, let alone every proof in flight.
+		//
+		// A subscribe lost this way is picked up by the next onOpen, which
+		// re-sends every address still being watched.
 		try {
-			socket.send(JSON.stringify(subscriptionMessage))
+			socket.send(JSON.stringify({ type, data }))
 		} catch(err) {
-			logger.error({ err }, 'could not subscribe to BGP updates')
-			return
+			logger.error({ err, type, data }, 'could not reach the BGP feed')
+		}
+	}
+
+	function onOpen(socket: ReturnType<typeof makeWebSocket>): void {
+		// Re-subscribe everything still being watched. A reconnection that did
+		// not restore its subscriptions would leave the listener connected,
+		// quiet and blind -- which reads exactly like a quiet internet.
+		for(const ip of targetIps.keys()) {
+			send('ris_subscribe', watchFor(ip), socket)
 		}
 
-		logger.info('connected to BGP websocket')
+		logger.info({ watching: targetIps.size }, 'connected to BGP websocket')
 	}
 
 	function onClose(socket: ReturnType<typeof makeWebSocket>, err?: Error | Event) {
@@ -158,6 +207,16 @@ export function createBgpListener(logger: Logger): BGPListener {
 
 	function onMessage(message: string): void {
 		const data = JSON.parse(message)
+
+		// ris-live refuses a subscription it cannot parse by answering, not by
+		// dropping it. Swallowing that would leave the listener attached to a
+		// feed carrying nothing and no way to tell that apart from an internet
+		// with no announcements in it.
+		if(data?.type === 'ris_error') {
+			logger.error({ err: data?.data }, 'the BGP feed refused a subscription')
+			return
+		}
+
 		const announcements = data?.data?.announcements
 
 		logger.trace({ data }, 'got BGP update')
@@ -197,7 +256,7 @@ export function createBgpListener(logger: Logger): BGPListener {
 		}
 
 		const cidr = new CIDR(prefix)
-		for(const ip of targetIps) {
+		for(const ip of targetIps.keys()) {
 			if(cidr.contains(ip)) {
 				return true
 			}

@@ -31,7 +31,15 @@ describe('BGP Listener', () => {
 	})
 
 	it('should listen for BGP announcements', async() => {
+		// Asserted on registering a target rather than on connecting. This used
+		// to check that *something* was sent on open, which the blanket
+		// `{ type: 'UPDATE' }` subscription satisfied -- so it passed while the
+		// attestor pulled the entire global feed across an idle connection.
+		assert.strictEqual(mockWs.send.mock.callCount(), 0)
+
+		const cancel = listener.onOverlap(['43.240.13.21'], mock.fn())
 		assert.ok(mockWs.send.mock.callCount())
+		cancel()
 	})
 
 	it('should callback on BGP announcement overlap', async() => {
@@ -299,6 +307,116 @@ describe('BGP Listener reconnection', () => {
 				assert.notStrictEqual(mockWs, dying, `round ${i} did not replace the dead socket`)
 			}
 		}, 'a reconnect storm threw; that is fatal to every proof in flight')
+
+		listener.close()
+	})
+})
+
+describe('BGP Listener subscriptions', () => {
+
+	beforeEach(() => mock.timers.enable({ apis: ['setTimeout'] }))
+	afterEach(() => mock.timers.reset())
+
+	function sent(ws: MockWS) {
+		return ws.send.mock.calls.map(c => JSON.parse(c.arguments[0] as string))
+	}
+
+	/**
+	 * The attestor's CPU problem, as a test.
+	 *
+	 * It subscribed to `{ type: 'UPDATE' }` -- the unfiltered global feed --
+	 * and then threw almost all of it away in overlapsTargetIps. Measured on
+	 * the deployed attestor: 5.1 GB received in an hour, a receive queue that
+	 * never drained, and 70-90% of a core in JSON.parse on the same thread
+	 * that serves every TLS tunnel. The relay had to cap itself at sixteen
+	 * concurrent witnessed sessions to stay under it, and past that cap
+	 * requests were served unwitnessed -- nineteen of them in five minutes on
+	 * 2026-09-16.
+	 */
+	it('asks only for announcements that could contain a watched address', async() => {
+		const { createBgpListener, logger } = await import('#src/utils/index.ts')
+		const listener = createBgpListener(logger)
+		const ws = mockWs
+		ws.open()
+
+		assert.deepStrictEqual(
+			sent(ws), [],
+			'something was subscribed to before any session asked to be watched; '
+			+ 'an idle attestor must not be reading the global BGP feed'
+		)
+
+		const cancel = listener.onOverlap(['43.240.13.21'], mock.fn())
+
+		assert.deepStrictEqual(sent(ws), [{
+			type: 'ris_subscribe',
+			data: { type: 'UPDATE', prefix: '43.240.13.21/32', lessSpecific: true },
+		}], 'the subscription is not scoped to the watched address')
+
+		cancel()
+		listener.close()
+	})
+
+	/**
+	 * Every session to one provider targets the same addresses. With a Set, the
+	 * first of them to finish deleted the address the rest were still relying
+	 * on, and their hijack check went quiet without saying so -- which is the
+	 * failure that only appears once there is concurrency, and looks like
+	 * nothing at all.
+	 */
+	it('keeps watching an address until the last session using it is done', async() => {
+		const { createBgpListener, logger } = await import('#src/utils/index.ts')
+		const listener = createBgpListener(logger)
+		const ws = mockWs
+		ws.open()
+
+		const first = listener.onOverlap(['43.240.13.21'], mock.fn())
+		const overlapped = mock.fn()
+		const second = listener.onOverlap(['43.240.13.21'], overlapped)
+
+		assert.strictEqual(
+			sent(ws).filter(m => m.type === 'ris_subscribe').length, 1,
+			'two sessions on one address subscribed twice'
+		)
+
+		first()
+
+		assert.deepStrictEqual(
+			sent(ws).filter(m => m.type === 'ris_unsubscribe'), [],
+			'one session finishing stopped watching an address another session still needs'
+		)
+
+		ws.onmessage(MOCK_MSG_EVENT)
+		assert.ok(
+			overlapped.mock.callCount(),
+			'the session still running stopped being told about overlaps on its own address'
+		)
+
+		second()
+		assert.strictEqual(
+			sent(ws).filter(m => m.type === 'ris_unsubscribe').length, 1,
+			'the last session finishing did not stop watching'
+		)
+
+		listener.close()
+	})
+
+	it('restores its subscriptions after a reconnect', async() => {
+		const { createBgpListener, logger } = await import('#src/utils/index.ts')
+		const listener = createBgpListener(logger)
+		mockWs.open()
+		listener.onOverlap(['43.240.13.21'], mock.fn())
+
+		mockWs.readyState = CLOSED
+		mockWs.onerror?.(new Error('connection reset'))
+		mock.timers.tick(5_000)
+
+		const replacement = mockWs
+		replacement.open()
+
+		assert.deepStrictEqual(sent(replacement), [{
+			type: 'ris_subscribe',
+			data: { type: 'UPDATE', prefix: '43.240.13.21/32', lessSpecific: true },
+		}], 'a reconnect left the listener attached, quiet and blind')
 
 		listener.close()
 	})
